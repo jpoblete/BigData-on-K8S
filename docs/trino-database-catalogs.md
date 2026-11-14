@@ -90,6 +90,7 @@ kubectl -n warehouse exec trino-coordinator-0 -- sh -c 'trino --user admin --exe
 - **MySQL connector URL must not include a database.** The database is chosen by the catalog's schema. Including `/bigdata` in `connection-url` crashes the coordinator with `Database (catalog) must not be specified in JDBC URL`.
 - **PostgreSQL connector URL must include the database** (`/bigdata`). The opposite of MySQL.
 - **Oracle needs `case-insensitive-name-matching=true`** for the lowercase `bigdata` layout. Without it, the table list is empty (see Oracle case sensitivity above).
+- **Oracle table list empty after a restart.** Check, in order: (1) `SHOW TABLES FROM oracle.bigdata` in Trino, (2) that `case-insensitive-name-matching=true` is still in the rendered catalog, (3) that the table exists in Oracle with `SELECT owner||'.'||table_name FROM dba_tables WHERE table_name='sample_customers'`. The database-side grants and logins were correct throughout; the missing piece was the case setting.
 - **Oracle `GRANT` must follow table creation.** A grant on a missing object fails, which left `trino` with no access on a fresh run. The setup script now creates the table first.
 - **Oracle first start is slow.** The pod reports Ready once the listener is up, but the database can still be creating (`Copying database files`). Wait for `DATABASE IS READY TO USE` in `kubectl logs oracle-0` before running setup.
 - **Oracle password rules.** The `ORACLE_PWD` value must be at least 8 characters with an uppercase letter, a lowercase letter, and a digit.
