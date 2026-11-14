@@ -13,13 +13,15 @@ Trino reads three relational databases in the warehouse namespace, all through a
 | --- | --- | --- | --- | --- |
 | MySQL | 8.4 (`mysql:8.4`) | `mysql` | database `bigdata` | `mysql.bigdata.<table>` |
 | PostgreSQL | 16 (`postgres:16`) | `postgres` | database `bigdata`, schema `bigdata` | `postgres.bigdata.<table>` |
-| Oracle | 23ai Free (`23.9.0.0-amd64`) | `oracle` | user/schema `bigdata` | `oracle."bigdata"."<table>"` |
+| Oracle | 23ai Free (`23.9.0.0-amd64`) | `oracle` | user/schema `bigdata` | `oracle.bigdata.<table>` |
 
 Redis is out of scope for now. Redis has no named databases, so it would use a key-prefix or numbered-DB convention and isn't exposed through Trino.
 
-### Oracle quoting
+### Oracle case sensitivity
 
-Oracle folds unquoted identifiers to uppercase, so the lowercase `bigdata` user and table need double quotes in SQL: `oracle."bigdata"."sample_customers"`. Unquoted `oracle.bigdata.sample_customers` will not resolve.
+Oracle stores unquoted identifiers in uppercase, but the `bigdata` user and `sample_customers` table here are created in lowercase, as written. Trino's Oracle connector looks names up in uppercase by default, so it can't see them without `case-insensitive-name-matching=true` in `overlays/warehouse/trino/oracle.properties`. With that set, the query is `oracle.bigdata.sample_customers`, with no quoting.
+
+Without the setting, Trino lists neither the table nor the schema, while Hue still shows the schema from a different metadata path. If the Oracle catalog ever shows an empty table list, check this setting first.
 
 ## Where things live
 
@@ -80,13 +82,14 @@ kubectl -n warehouse exec trino-coordinator-0 -- sh -c 'ls /usr/lib/trino/etc/ca
 # Each catalog answers a query (sample table: 3 rows)
 kubectl -n warehouse exec trino-coordinator-0 -- sh -c 'trino --user admin --execute "SELECT * FROM mysql.bigdata.sample_customers"'
 kubectl -n warehouse exec trino-coordinator-0 -- sh -c 'trino --user admin --execute "SELECT * FROM postgres.bigdata.sample_customers"'
-kubectl -n warehouse exec trino-coordinator-0 -- sh -c 'trino --user admin --execute "SELECT * FROM oracle.\"bigdata\".\"sample_customers\""'
+kubectl -n warehouse exec trino-coordinator-0 -- sh -c 'trino --user admin --execute "SELECT * FROM oracle.bigdata.sample_customers"'
 ```
 
 ## Known issues and gotchas
 
 - **MySQL connector URL must not include a database.** The database is chosen by the catalog's schema. Including `/bigdata` in `connection-url` crashes the coordinator with `Database (catalog) must not be specified in JDBC URL`.
 - **PostgreSQL connector URL must include the database** (`/bigdata`). The opposite of MySQL.
+- **Oracle needs `case-insensitive-name-matching=true`** for the lowercase `bigdata` layout. Without it, the table list is empty (see Oracle case sensitivity above).
 - **Oracle `GRANT` must follow table creation.** A grant on a missing object fails, which left `trino` with no access on a fresh run. The setup script now creates the table first.
 - **Oracle first start is slow.** The pod reports Ready once the listener is up, but the database can still be creating (`Copying database files`). Wait for `DATABASE IS READY TO USE` in `kubectl logs oracle-0` before running setup.
 - **Oracle password rules.** The `ORACLE_PWD` value must be at least 8 characters with an uppercase letter, a lowercase letter, and a digit.
