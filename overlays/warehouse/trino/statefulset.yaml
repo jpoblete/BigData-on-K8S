@@ -149,6 +149,9 @@ kind: StatefulSet
 metadata:
   name: trino-worker
   namespace: warehouse
+  labels:
+    app: trino
+    role: worker
 spec:
   serviceName: trino-headless
   replicas: 2
