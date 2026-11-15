@@ -1,4 +1,4 @@
-# Apache Hive Kubernetes Lab
+# BigData on Kubernetes Lab
 
 ## Author
 

@@ -3,13 +3,13 @@
 All paths below are **in this repo** on your machine:
 
 ```text
-Hive-on-K8S/samples/logging/
+BigData-on-K8S/samples/logging/
 ```
 
 Open from the project root:
 
 ```bash
-cd /Users/j.martinez.poblete/Downloads/K8S/Hive-on-K8S
+cd /Users/j.martinez.poblete/Downloads/K8S/BigData-on-K8S
 less samples/logging/tez_application_trouble_0001.log
 ```
 
