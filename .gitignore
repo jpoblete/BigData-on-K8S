@@ -5,3 +5,5 @@ backups/
 .hivectl/
 .DS_Store
 *.tmp
+target/
+chat.txt
