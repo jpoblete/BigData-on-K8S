@@ -2755,6 +2755,27 @@ function restoreStandaloneStack(){
    fi
    return "${status}"
 }
+# List existing backup directories for an overlay (./backups/<overlay>-YYYYMMDD-HHMMSS),
+# newest first, so the user can decide whether a new backup is needed.
+function listBackupsForOverlay(){
+   local namespace="$1"
+   local dir=""
+   local found=0
+
+   echo "Available previous backups for '${namespace}':"
+   for dir in $(ls -1d ./backups/"${namespace}"-*/ 2>/dev/null | sort -r); do
+      dir="${dir%/}"
+      local files=""
+      files="$(ls -1 "${dir}" 2>/dev/null | tr '\n' ' ')"
+      echo "  - ${dir}  [${files% }]"
+      found=1
+   done
+   if [ "${found}" -eq 0 ]; then
+      echo "  (none found under ./backups/)"
+   fi
+   echo
+}
+
 # Destructively remove standalone data PVC/PV bindings after optional backup.
 function cleanupStandaloneStack(){
    local namespace="$1"
@@ -2779,6 +2800,7 @@ Cleanup removes every PVC in the namespace, every PV bound to it, and
 If these PVCs/PVs are cleared, standalone Derby metastore, warehouse, and logs can be lost.
 EOF
 
+   listBackupsForOverlay "${namespace}"
    read -r -p "Create a backup before cleanup? [Y/n] " answer
    case "${answer}" in
       ""|y|Y|yes|YES)
@@ -3358,6 +3380,7 @@ $(if [ -n "${actual_pvcs// /}" ] && [ "${actual_pvcs}" != "${expected_pvcs}" ]; 
 If these PVCs/PVs are cleared, Hive metastore and HDFS data can be lost.
 EOF
 
+   listBackupsForOverlay "${namespace}"
    read -r -p "Create a backup before cleanup? [Y/n] " answer
    case "${answer}" in
       ""|y|Y|yes|YES)
