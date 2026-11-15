@@ -3289,16 +3289,15 @@ EOF
       [ "${status}" -eq 0 ] || return 1
    done < "${backup_dir}/pvcs.txt"
 
-   # Workloads that already exist come back first, so startStack's per-component hooks find running pods.
-   scaleNamespaceWorkloads "${namespace}" "${backup_dir}/workloads.txt" || status=1
-   startStack "${namespace}" || status=1
-   while read -r target; do
-      [ -n "${target}" ] || continue
-      overlayActive "${target}" && continue
-      startOverlay "${target}" || status=1
-   done < "${backup_dir}/overlays.txt"
-   # Objects that no overlay creates (applied by hand) are re-created from the backed-up manifests.
-   kubectl create -f "${backup_dir}/manifests.json" --save-config 2>&1 | grep -v AlreadyExists || true
+   # The backed-up manifests are what was running, including image overrides given at start time
+   # (RANGER_ADMIN_IMAGE, HIVE_IMAGE_REGISTRY, ...) and objects applied outside an overlay.
+   echo "Re-creating workloads, Services and ConfigMaps from the backup ..."
+   kubectl apply -f "${backup_dir}/manifests.json" >/dev/null || status=1
+   # Workloads that weren't running at backup time stay stopped.
+   for target in $(kubectl get statefulsets,deployments -n "${namespace}" -o name); do
+      grep -q "^${target/.apps/} " "${backup_dir}/workloads.txt" \
+         || kubectl scale "${target}" -n "${namespace}" --replicas=0 >/dev/null || status=1
+   done
    scaleNamespaceWorkloads "${namespace}" "${backup_dir}/workloads.txt" || status=1
    ensureProfileUiPortForwards "${namespace}" || true
 
