@@ -411,21 +411,6 @@ function waitForRangerMysqlInit(){
    fi
    kubectl wait --for=condition=complete job/ranger-mysql-init -n "${namespace}" --timeout=300s
 }
-# Save the generated namespace credentials in a portable backup manifest.
-function backupSecrets(){
-   local namespace="$1"
-   local backup_dir="$2"
-
-   ensureSecrets "${namespace}" || return 1
-   kubectl get secret hive-credentials -n "${namespace}" -o json \
-   | python3 -c 'import json, sys
-obj = json.load(sys.stdin)
-obj["metadata"] = {"name": obj["metadata"]["name"], "namespace": obj["metadata"]["namespace"]}
-for key in ("creationTimestamp", "resourceVersion", "uid", "managedFields"):
-    obj["metadata"].pop(key, None)
-print(json.dumps(obj, indent=2))
-' > "${backup_dir}/hive-credentials.secret.json"
-}
 # Restore namespace credentials from a backup when present. MySQL creates its users on first boot and
 # the metastore dump doesn't include them, so once MySQL has a volume the current credentials are kept.
 function restoreSecrets(){
@@ -2643,55 +2628,6 @@ function deleteStandaloneDataHelper(){
 
    kubectl delete pod standalone-data-helper -n "${namespace}" --ignore-not-found --force
 }
-# Back up standalone Derby, warehouse, and log PVC contents.
-function backupStandaloneStack(){
-   local namespace="$1"
-   local backup_dir="${2:-}"
-   local was_active=0
-   local status=0
-
-   if [ -z "${backup_dir}" ]; then
-      backup_dir="./backups/${namespace}-$(date +%Y%m%d-%H%M%S)"
-   fi
-
-   requireNamespace "${namespace}" || return 1
-   ensureDeployPrerequisitesOnce || return 1
-   mkdir -p "${backup_dir}" || return 1
-   echo "Creating standalone backup in: ${backup_dir}"
-   backupSecrets "${namespace}" "${backup_dir}" || return 1
-
-   overlayActive "${namespace}_hive"
-   case $? in
-      0)
-         stopOverlay "${namespace}_hive" || return 1
-         was_active=1
-         ;;
-      2) return 1 ;;
-   esac
-
-   createStandaloneDataHelper "${namespace}" || status=1
-   if [ "${status}" -eq 0 ]; then
-      kubectl exec standalone-data-helper -n "${namespace}" -- bash -lc '
-         tar -C /opt/hive -czf /tmp/standalone-hive.tgz derby data/warehouse log
-      ' || status=1
-   fi
-   if [ "${status}" -eq 0 ]; then
-      kubectl cp "${namespace}/standalone-data-helper:/tmp/standalone-hive.tgz" "${backup_dir}/standalone-hive.tgz" || status=1
-   fi
-
-   deleteStandaloneDataHelper "${namespace}" || status=1
-
-   if [ "${was_active}" = "1" ]; then
-      startOverlay "${namespace}_hive" || status=1
-   fi
-
-   if [ "${status}" -eq 0 ]; then
-      echo "Standalone backup complete: ${backup_dir}"
-   else
-      echo "Standalone backup failed: ${backup_dir}"
-   fi
-   return "${status}"
-}
 # Restore standalone Derby, warehouse, and log PVC contents.
 function restoreStandaloneStack(){
    local namespace="$1"
@@ -2804,7 +2740,7 @@ EOF
    read -r -p "Create a backup before cleanup? [Y/n] " answer
    case "${answer}" in
       ""|y|Y|yes|YES)
-         backupStandaloneStack "${namespace}" || return 1
+         backupStack "${namespace}" || return 1
          ;;
       n|N|no|NO)
          echo "Skipping backup."
@@ -2843,94 +2779,6 @@ function hdfsBackupPod(){
       secure) echo "hadoop-namenode-0" ;;
       *) echo "hadoop-0" ;;
    esac
-}
-# Ensure HDFS storage is Ready before backup/restore.
-function ensureHdfsOverlayReady(){
-   local namespace="$1"
-
-   case "${namespace}" in
-      secure) ensureOverlayReady "${namespace}" hadoop-namenode ;;
-      *) ensureOverlayReady "${namespace}" hadoop ;;
-   esac
-}
-# Archive selected HDFS paths inside the HDFS admin pod.
-function hdfsArchiveForBackup(){
-   local namespace="$1"
-   local pod
-   pod="$(hdfsBackupPod "${namespace}")"
-
-   if [ "${namespace}" = "secure" ]; then
-      # shellcheck disable=SC2016
-      kubectl exec "${pod}" -n "${namespace}" -- bash -lc '
-         realm="${KRB5_REALM:-SECURE.LAB}"
-         host="$(hostname -f)"
-         sudo -u hadoop kinit -kt /home/hadoop/host-service.keytab "hdfs/${host}@${realm}" || exit 1
-         rm -rf /tmp/hdfs-backup /tmp/hdfs-backup.tgz
-         mkdir -p /tmp/hdfs-backup
-         copy_hdfs_path() {
-            local path="$1" child name hive_child hive_name
-            hdfs dfs -test -e "${path}" || return 0
-            if [ "${path}" != "/user" ]; then
-               hdfs dfs -get "${path}" /tmp/hdfs-backup/
-               return 0
-            fi
-            mkdir -p /tmp/hdfs-backup/user
-            while IFS= read -r child; do
-               [ -n "${child}" ] || continue
-               name="${child##*/}"
-               if [ "${name}" != "hive" ]; then
-                  hdfs dfs -get "${child}" /tmp/hdfs-backup/user/
-                  continue
-               fi
-               mkdir -p /tmp/hdfs-backup/user/hive
-               while IFS= read -r hive_child; do
-                  [ -n "${hive_child}" ] || continue
-                  hive_name="${hive_child##*/}"
-                  [ "${hive_name}" = "logs" ] && continue
-                  hdfs dfs -get "${hive_child}" /tmp/hdfs-backup/user/hive/
-               done < <(hdfs dfs -ls /user/hive 2>/dev/null | awk "NR>1 {print \$NF}")
-            done < <(hdfs dfs -ls /user 2>/dev/null | awk "NR>1 {print \$NF}")
-         }
-         for path in /opt /tmp /user /users /warehouse; do
-            copy_hdfs_path "${path}"
-         done
-         tar -C /tmp -czf /tmp/hdfs-backup.tgz hdfs-backup
-      '
-   else
-      # shellcheck disable=SC2016
-      kubectl exec "${pod}" -n "${namespace}" -- bash -lc '
-         rm -rf /tmp/hdfs-backup /tmp/hdfs-backup.tgz
-         mkdir -p /tmp/hdfs-backup
-         copy_hdfs_path() {
-            local path="$1" child name hive_child hive_name
-            hdfs dfs -test -e "${path}" || return 0
-            if [ "${path}" != "/user" ]; then
-               hdfs dfs -get "${path}" /tmp/hdfs-backup/
-               return 0
-            fi
-            mkdir -p /tmp/hdfs-backup/user
-            while IFS= read -r child; do
-               [ -n "${child}" ] || continue
-               name="${child##*/}"
-               if [ "${name}" != "hive" ]; then
-                  hdfs dfs -get "${child}" /tmp/hdfs-backup/user/
-                  continue
-               fi
-               mkdir -p /tmp/hdfs-backup/user/hive
-               while IFS= read -r hive_child; do
-                  [ -n "${hive_child}" ] || continue
-                  hive_name="${hive_child##*/}"
-                  [ "${hive_name}" = "logs" ] && continue
-                  hdfs dfs -get "${hive_child}" /tmp/hdfs-backup/user/hive/
-               done < <(hdfs dfs -ls /user/hive 2>/dev/null | awk "NR>1 {print \$NF}")
-            done < <(hdfs dfs -ls /user 2>/dev/null | awk "NR>1 {print \$NF}")
-         }
-         for path in /opt /tmp /user /users /warehouse; do
-            copy_hdfs_path "${path}"
-         done
-         tar -C /tmp -czf /tmp/hdfs-backup.tgz hdfs-backup
-      '
-   fi
 }
 # Restore HDFS paths from an archive inside the HDFS admin pod.
 function hdfsRestoreFromArchive(){
@@ -3126,22 +2974,6 @@ function startRangerIfStopped(){
    [ "${namespace}" = "secure" ] || return 0
    startOverlay "secure_ranger" || return 1
 }
-# Dump Ranger policy/service data from MySQL (secure, when ranger DB exists).
-function backupRangerDatabase(){
-   local namespace="$1"
-   local backup_dir="$2"
-
-   [ "${namespace}" = "secure" ] || return 0
-   if ! mysqlDatabaseExists "${namespace}" ranger; then
-      echo "Skipping Ranger backup (no ranger database in MySQL; start './hiveCtl.sh start secure ranger' first)"
-      return 0
-   fi
-   echo "Backing up MySQL ranger database (Ranger policies and services) ..."
-   # shellcheck disable=SC2016
-   kubectl exec mysql-0 -n "${namespace}" -- \
-      sh -c 'mysqldump -uroot -p"$MYSQL_ROOT_PASSWORD" --single-transaction --routines --events --databases ranger' \
-      > "${backup_dir}/mysql-ranger.sql" || return 1
-}
 # Create ranger DB/user on mysql-0 before importing mysql-ranger.sql (fresh PVC after cleanup).
 function ensureRangerMysqlForRestore(){
    local namespace="$1"
@@ -3185,63 +3017,214 @@ function restoreRangerDatabase(){
       sh -c 'mysql -uroot -p"$MYSQL_ROOT_PASSWORD"' \
       < "${backup_dir}/mysql-ranger.sql" || return 1
 }
-# Back up MySQL metastore data and HDFS data to a local directory.
+# Full-namespace backup: every Secret, the workload/Service/ConfigMap manifests, the replica count of each
+# StatefulSet/Deployment, and the file contents of every bound PVC (copied while the workloads are scaled
+# to zero, so databases, the KDC, Cassandra and Oracle are captured consistently).
+function pvcHelperImage(){
+   echo "${HIVECTL_PVC_HELPER_IMAGE:-busybox:1.36}"
+}
+function pvcHelperPodName(){
+   echo "pvc-helper-$(printf '%s' "$1" | cksum | cut -d' ' -f1)"
+}
+# Start a root pod that mounts one PVC at /data. affinity is an optional "key=value" node label the
+# scheduler should prefer, so a new volume is provisioned where the original one lived.
+function createPvcHelper(){
+   local namespace="$1"
+   local pvc="$2"
+   local affinity="${3:-}"
+   local pod=""
+   local affinity_yaml=""
+
+   pod="$(pvcHelperPodName "${pvc}")"
+   if [ -n "${affinity}" ]; then
+      affinity_yaml="  affinity:
+    nodeAffinity:
+      preferredDuringSchedulingIgnoredDuringExecution:
+        - weight: 100
+          preference:
+            matchExpressions:
+              - key: ${affinity%%=*}
+                operator: In
+                values: [\"${affinity#*=}\"]"
+   fi
+   cat <<EOF | kubectl apply -f - >/dev/null || return 1
+apiVersion: v1
+kind: Pod
+metadata:
+  name: ${pod}
+  namespace: ${namespace}
+  labels:
+    app: pvc-helper
+spec:
+  automountServiceAccountToken: false
+  restartPolicy: Never
+${affinity_yaml}
+  containers:
+    - name: helper
+      image: $(pvcHelperImage)
+      command: ["sh", "-c", "sleep 86400"]
+      securityContext:
+        runAsUser: 0
+      volumeMounts:
+        - name: data
+          mountPath: /data
+  volumes:
+    - name: data
+      persistentVolumeClaim:
+        claimName: ${pvc}
+EOF
+   kubectl wait --for=condition=Ready "pod/${pod}" -n "${namespace}" --timeout=600s >/dev/null
+}
+function deletePvcHelper(){
+   kubectl delete pod "$(pvcHelperPodName "$2")" -n "$1" --ignore-not-found --now >/dev/null
+}
+# Print "kind/name replicas" for every StatefulSet and Deployment in the namespace.
+function namespaceWorkloads(){
+   kubectl get statefulsets,deployments -n "$1" -o json \
+   | python3 -c 'import json, sys
+for o in json.load(sys.stdin)["items"]:
+    print("%s/%s %s" % (o["kind"].lower(), o["metadata"]["name"], o["spec"].get("replicas", 1)))'
+}
+# Scale every workload to zero and wait until no pod still mounts a PVC.
+function quiesceNamespaceWorkloads(){
+   local namespace="$1"
+   local workload=""
+   local deadline=$((SECONDS + 900))
+
+   for workload in $(kubectl get statefulsets,deployments -n "${namespace}" -o name); do
+      kubectl scale "${workload}" -n "${namespace}" --replicas=0 >/dev/null || return 1
+   done
+   echo "Waiting for pods in '${namespace}' to stop ..."
+   while kubectl get pods -n "${namespace}" -o json | python3 -c 'import json, sys
+busy = [p for p in json.load(sys.stdin)["items"]
+        if p["metadata"].get("labels", {}).get("app") != "pvc-helper"
+        and p["status"].get("phase") not in ("Succeeded", "Failed")
+        and any("persistentVolumeClaim" in v for v in p["spec"].get("volumes", []))]
+sys.exit(0 if busy else 1)'; do
+      if [ "${SECONDS}" -ge "${deadline}" ]; then
+         echo "Timed out waiting for pods in '${namespace}' to stop"
+         return 1
+      fi
+      sleep 5
+   done
+}
+# Scale workloads listed in a "kind/name replicas" file back to their recorded count, then wait for them.
+function scaleNamespaceWorkloads(){
+   local namespace="$1"
+   local workloads_file="$2"
+   local workload=""
+   local replicas=""
+   local status=0
+
+   while read -r workload replicas; do
+      [ -n "${workload}" ] || continue
+      kubectl get "${workload}" -n "${namespace}" >/dev/null 2>&1 || continue
+      kubectl scale "${workload}" -n "${namespace}" --replicas="${replicas}" >/dev/null || status=1
+   done < "${workloads_file}"
+   while read -r workload replicas; do
+      [ -n "${workload}" ] && [ "${replicas}" != "0" ] || continue
+      kubectl get "${workload}" -n "${namespace}" >/dev/null 2>&1 || continue
+      kubectl rollout status "${workload}" -n "${namespace}" --timeout=1200s || status=1
+   done < "${workloads_file}"
+   return "${status}"
+}
+# Strip cluster-assigned fields so exported objects can be re-created in a new namespace.
+function portableObjectList(){
+   python3 -c 'import json, sys
+drop_annotations = ("kubectl.kubernetes.io/last-applied-configuration", "deployment.kubernetes.io/revision")
+items = []
+for o in json.load(sys.stdin)["items"]:
+    m = o["metadata"]
+    kind = o["kind"]
+    if m.get("ownerReferences") or m.get("labels", {}).get("app") == "pvc-helper":
+        continue
+    if kind == "ConfigMap" and m["name"] == "kube-root-ca.crt":
+        continue
+    if kind == "ServiceAccount" and m["name"] == "default":
+        continue
+    if kind == "Secret" and o.get("type") in ("kubernetes.io/service-account-token", "helm.sh/release.v1"):
+        continue
+    meta = {"name": m["name"], "namespace": m["namespace"]}
+    for field in ("labels", "annotations"):
+        values = {k: v for k, v in m.get(field, {}).items() if k not in drop_annotations}
+        if values:
+            meta[field] = values
+    o["metadata"] = meta
+    o.pop("status", None)
+    if kind == "Service":
+        for key in ("clusterIP", "clusterIPs"):
+            o["spec"].pop(key, None)
+    if kind == "ServiceAccount":
+        o.pop("secrets", None)
+    items.append(o)
+print(json.dumps({"apiVersion": "v1", "kind": "List", "items": items}, indent=1))'
+}
+# Print "name storageClass size accessMode nodeLabel=value" for every bound PVC in the namespace.
+function namespacePvcInventory(){
+   local namespace="$1"
+
+   python3 -c 'import json, subprocess, sys
+ns = sys.argv[1]
+pvcs = json.loads(subprocess.check_output(["kubectl", "get", "pvc", "-n", ns, "-o", "json"]))["items"]
+pvs = {p["metadata"]["name"]: p for p in json.loads(subprocess.check_output(["kubectl", "get", "pv", "-o", "json"]))["items"]}
+for c in pvcs:
+    if c.get("status", {}).get("phase") != "Bound":
+        continue
+    affinity = "-"
+    terms = pvs.get(c["spec"].get("volumeName"), {}).get("spec", {}).get("nodeAffinity", {}).get("required", {}).get("nodeSelectorTerms", [])
+    for term in terms:
+        for expr in term.get("matchExpressions", []):
+            if expr.get("operator") == "In" and expr.get("values"):
+                affinity = "%s=%s" % (expr["key"], expr["values"][0])
+                break
+    print(c["metadata"]["name"], c["spec"].get("storageClassName") or "-",
+          c["status"].get("capacity", {}).get("storage") or c["spec"]["resources"]["requests"]["storage"],
+          c["spec"]["accessModes"][0], affinity)' "${namespace}"
+}
 function backupStack(){
    local namespace="$1"
    local backup_dir="${2:-}"
-   local stopped_hms=0
-   local stopped_hs2=0
-   local stopped_ranger=0
+   local pvc=""
    local status=0
-
-   if [ "${namespace}" = "standalone" ]; then
-      backupStandaloneStack "${namespace}" "${backup_dir}"
-      return $?
-   fi
 
    if [ -z "${backup_dir}" ]; then
       backup_dir="./backups/${namespace}-$(date +%Y%m%d-%H%M%S)"
    fi
 
    requireNamespace "${namespace}" || return 1
-
    ensureDeployPrerequisitesOnce || return 1
 
-   mkdir -p "${backup_dir}" || return 1
+   mkdir -p "${backup_dir}/pvc" || return 1
+   chmod 700 "${backup_dir}" || return 1
    echo "Creating backup in: ${backup_dir}"
-   backupSecrets "${namespace}" "${backup_dir}" || return 1
 
-   stopHiveWriters "${namespace}" stopped_hms stopped_hs2 || return 1
-   stopRangerIfActive "${namespace}" stopped_ranger || return 1
+   kubectl get secrets -n "${namespace}" -o json | portableObjectList > "${backup_dir}/secrets.json" || return 1
+   kubectl get statefulsets,deployments,services,configmaps,serviceaccounts,roles,rolebindings -n "${namespace}" -o json \
+      | portableObjectList > "${backup_dir}/manifests.json" || return 1
+   namespaceWorkloads "${namespace}" > "${backup_dir}/workloads.txt" || return 1
+   activeOverlays | awk -v ns="${namespace}" -F_ '$1 == ns' | sort -u > "${backup_dir}/overlays.txt" || return 1
+   namespacePvcInventory "${namespace}" > "${backup_dir}/pvcs.txt" || return 1
 
-   ensureHdfsOverlayReady "${namespace}" || status=1
-   ensureOverlayReady "${namespace}" mysql || status=1
-
-   if [ "${status}" -eq 0 ]; then
-      echo "Backing up MySQL metastore database ..."
-      # shellcheck disable=SC2016
-      kubectl exec mysql-0 -n "${namespace}" -- \
-         sh -c 'mysqldump -uroot -p"$MYSQL_ROOT_PASSWORD" --single-transaction --routines --events --databases hive' \
-         > "${backup_dir}/mysql-hive.sql" || status=1
-   fi
+   quiesceNamespaceWorkloads "${namespace}" || status=1
 
    if [ "${status}" -eq 0 ]; then
-      backupRangerDatabase "${namespace}" "${backup_dir}" || status=1
+      while read -r pvc _; do
+         [ -n "${pvc}" ] || continue
+         echo "Backing up PVC ${pvc} ..."
+         if ! createPvcHelper "${namespace}" "${pvc}" \
+            || ! kubectl exec "$(pvcHelperPodName "${pvc}")" -n "${namespace}" -- \
+                 tar --numeric-owner -C /data -czf - . > "${backup_dir}/pvc/${pvc}.tgz"; then
+            echo "Failed to back up PVC ${pvc}"
+            status=1
+         fi
+         deletePvcHelper "${namespace}" "${pvc}"
+         [ "${status}" -eq 0 ] || break
+      done < "${backup_dir}/pvcs.txt"
    fi
 
-   if [ "${status}" -eq 0 ]; then
-      echo "Backing up HDFS data ..."
-      hdfsArchiveForBackup "${namespace}" || status=1
-   fi
-
-   if [ "${status}" -eq 0 ]; then
-      local hdfs_pod
-      hdfs_pod="$(hdfsBackupPod "${namespace}")"
-      kubectl cp "${namespace}/${hdfs_pod}:/tmp/hdfs-backup.tgz" "${backup_dir}/hdfs-backup.tgz" || status=1
-   fi
-
-   startRangerIfStopped "${namespace}" "${stopped_ranger}" || status=1
-   restartHiveWriters "${namespace}" "${stopped_hms}" "${stopped_hs2}" || status=1
+   echo "Starting workloads in '${namespace}' again ..."
+   scaleNamespaceWorkloads "${namespace}" "${backup_dir}/workloads.txt" || status=1
+   ensureProfileUiPortForwards "${namespace}" || true
 
    if [ "${status}" -eq 0 ]; then
       echo "Backup complete: ${backup_dir}"
@@ -3250,8 +3233,100 @@ function backupStack(){
    fi
    return "${status}"
 }
-# Restore MySQL metastore data and HDFS data from a local backup directory.
+# Restore a full-namespace backup: Secrets, PVC contents, then the stack, every overlay and object that was
+# running, and the recorded replica counts. Works on a live namespace, after cleanup, or on a new cluster.
+function restoreFullStack(){
+   local namespace="$1"
+   local backup_dir="$2"
+   local pvc=""
+   local storage_class=""
+   local size=""
+   local access_mode=""
+   local affinity=""
+   local target=""
+   local status=0
+
+   ensureDeployPrerequisitesOnce || return 1
+   ensureNamespace "${namespace}" || return 1
+   echo "Restoring backup from: ${backup_dir}"
+
+   quiesceNamespaceWorkloads "${namespace}" || return 1
+
+   echo "Restoring Secrets ..."
+   kubectl apply -f "${backup_dir}/secrets.json" >/dev/null || return 1
+
+   while read -r pvc storage_class size access_mode affinity; do
+      [ -n "${pvc}" ] || continue
+      if [ ! -f "${backup_dir}/pvc/${pvc}.tgz" ]; then
+         echo "Missing ${backup_dir}/pvc/${pvc}.tgz"
+         return 1
+      fi
+      if ! kubectl get pvc "${pvc}" -n "${namespace}" >/dev/null 2>&1; then
+         cat <<EOF | kubectl apply -f - >/dev/null || return 1
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: ${pvc}
+  namespace: ${namespace}
+spec:
+  accessModes: ["${access_mode}"]
+$( [ "${storage_class}" != "-" ] && echo "  storageClassName: ${HIVE_STORAGE_CLASS_NAME:-${storage_class}}" )
+  resources:
+    requests:
+      storage: ${size}
+EOF
+      fi
+      echo "Restoring PVC ${pvc} ..."
+      [ "${affinity}" = "-" ] && affinity=""
+      if ! createPvcHelper "${namespace}" "${pvc}" "${affinity}" \
+         || ! kubectl exec -i "$(pvcHelperPodName "${pvc}")" -n "${namespace}" -- \
+              sh -c 'find /data -mindepth 1 -maxdepth 1 -exec rm -rf {} + && tar --numeric-owner -C /data -xzpf -' \
+              < "${backup_dir}/pvc/${pvc}.tgz"; then
+         echo "Failed to restore PVC ${pvc}"
+         status=1
+      fi
+      deletePvcHelper "${namespace}" "${pvc}"
+      [ "${status}" -eq 0 ] || return 1
+   done < "${backup_dir}/pvcs.txt"
+
+   # Workloads that already exist come back first, so startStack's per-component hooks find running pods.
+   scaleNamespaceWorkloads "${namespace}" "${backup_dir}/workloads.txt" || status=1
+   startStack "${namespace}" || status=1
+   while read -r target; do
+      [ -n "${target}" ] || continue
+      overlayActive "${target}" && continue
+      startOverlay "${target}" || status=1
+   done < "${backup_dir}/overlays.txt"
+   # Objects that no overlay creates (applied by hand) are re-created from the backed-up manifests.
+   kubectl create -f "${backup_dir}/manifests.json" --save-config 2>&1 | grep -v AlreadyExists || true
+   scaleNamespaceWorkloads "${namespace}" "${backup_dir}/workloads.txt" || status=1
+   ensureProfileUiPortForwards "${namespace}" || true
+
+   if [ "${status}" -eq 0 ]; then
+      echo "Restore complete: ${backup_dir}"
+   else
+      echo "Restore failed: ${backup_dir}"
+   fi
+   return "${status}"
+}
 function restoreStack(){
+   local namespace="$1"
+   local backup_dir="$2"
+
+   if [ -z "${backup_dir}" ] || [ ! -d "${backup_dir}" ]; then
+      echo "Restore requires a backup directory"
+      return 1
+   fi
+   if [ -f "${backup_dir}/pvcs.txt" ]; then
+      restoreFullStack "${namespace}" "${backup_dir}"
+   elif [ -f "${backup_dir}/standalone-hive.tgz" ]; then
+      restoreStandaloneStack "${namespace}" "${backup_dir}"
+   else
+      restoreLegacyStack "${namespace}" "${backup_dir}"
+   fi
+}
+# Restore an older backup (mysql-hive.sql + hdfs-backup.tgz, from before full-namespace backups).
+function restoreLegacyStack(){
    local namespace="$1"
    local backup_dir="$2"
    local stopped_hms=0
@@ -3261,15 +3336,6 @@ function restoreStack(){
    local component=""
    local status=0
 
-   if [ "${namespace}" = "standalone" ]; then
-      restoreStandaloneStack "${namespace}" "${backup_dir}"
-      return $?
-   fi
-
-   if [ -z "${backup_dir}" ]; then
-      echo "Restore requires a backup directory"
-      return 1
-   fi
    if [ ! -f "${backup_dir}/mysql-hive.sql" ] || [ ! -f "${backup_dir}/hdfs-backup.tgz" ]; then
       echo "Backup directory must contain mysql-hive.sql and hdfs-backup.tgz"
       return 1

@@ -357,7 +357,18 @@ Typical keys in Secret **`hive-credentials`** (namespace = profile name):
 
 Treat backup directories as sensitive because they contain both data and credentials.
 
-**`secure` backup contents:** `hive-credentials.secret.json`, `mysql-hive.sql`, `hdfs-backup.tgz`, and (when Ranger Admin has been started) **`mysql-ranger.sql`** — full MySQL dump of the **`ranger`** database (services, policies, users). Restore imports Ranger policies before the stack starts so **`secure_hive`** and HS2 plugin settings match the backup.
+**Backup contents (every profile):** the whole namespace, so a restore needs no manual steps.
+
+| File | Contents |
+|---|---|
+| `secrets.json` | Every Secret in the namespace (credentials, keytabs, TLS, registry pull secrets) |
+| `pvc/<pvc>.tgz` | File contents of every bound PVC: MySQL (all databases and users), HDFS NameNode/DataNodes, KDC, Cassandra, Postgres, Oracle, Derby, … |
+| `pvcs.txt` | PVC name, StorageClass, size, access mode, and the node/zone it lived on |
+| `workloads.txt` | Replica count of every StatefulSet/Deployment |
+| `overlays.txt` | Overlays that were active |
+| `manifests.json` | StatefulSets, Deployments, Services, ConfigMaps, ServiceAccounts, Roles, RoleBindings (re-creates anything applied outside an overlay) |
+
+Backup scales every workload to zero while it copies the PVCs (so databases are captured consistently) and then scales them back; expect a short outage. Volumes are copied by a helper pod (`busybox:1.36`, override with **`HIVECTL_PVC_HELPER_IMAGE`**). Restore applies the Secrets, re-creates the PVCs (preferring the original node/zone) and loads their data, runs `start`, starts any other overlay or hand-applied object that was running, and returns every workload to its recorded replica count. Backups made before this format (`mysql-hive.sql` + `hdfs-backup.tgz`, or `standalone-hive.tgz`) still restore with the previous logic.
 
 `stop` keeps the PVCs and gives each pod its grace period to shut its services down cleanly. When the Kubernetes API can't be reached, `hiveCtl.sh` reports the error and stops rather than treating components as stopped or missing.
 
@@ -368,6 +379,7 @@ Use backup before cleanup:
 ./hiveCtl.sh backup mini
 ./hiveCtl.sh backup llap
 ./hiveCtl.sh backup secure
+./hiveCtl.sh backup warehouse
 ```
 
 Restore:
@@ -377,9 +389,10 @@ Restore:
 ./hiveCtl.sh restore mini <backup-dir>
 ./hiveCtl.sh restore llap <backup-dir>
 ./hiveCtl.sh restore secure <backup-dir>
+./hiveCtl.sh restore warehouse <backup-dir>
 ```
 
-Restore also works after cleanup or on a new cluster: it creates the namespace with the backed-up credentials, starts the storage, loads the backup, and then starts the rest of the stack. If MySQL already has a volume, the current credentials are kept, because MySQL created its users with them and the metastore dump doesn't include users.
+Restore works on a running namespace, after cleanup, or on a new cluster. On a running namespace it stops the workloads and replaces their data and Secrets with the backup's.
 
 Destructive cleanup requires confirmation and offers to create a backup first. For every profile (`standalone`, `mini`, `llap`, `secure`, `warehouse`), cleanup deletes **all** PVCs in the namespace, **all** PVs bound to that namespace, and matching **`local-path-provisioner`** directories on Kind nodes (not only a fixed PVC name list).
 
@@ -388,6 +401,7 @@ Destructive cleanup requires confirmation and offers to create a backup first. F
 ./hiveCtl.sh cleanup mini
 ./hiveCtl.sh cleanup llap
 ./hiveCtl.sh cleanup secure
+./hiveCtl.sh cleanup warehouse
 ```
 
 ## Bootstrap model
