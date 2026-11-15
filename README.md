@@ -1,5 +1,7 @@
 # BigData on Kubernetes Lab
 
+> `hiveCtl.sh` manages the full lab stack (Hive, HDFS, Ranger, Kerberos, Cassandra, Trino, Hue), not only Hive.
+
 ## Author
 
 José Martínez-Poblete  
