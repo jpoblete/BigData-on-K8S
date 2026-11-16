@@ -356,6 +356,13 @@ Typical keys in Secret **`hive-credentials`** (namespace = profile name):
 | `hue-mysql-password`, `hue-secret-key` | **`standalone`**, **`mini`**, **`llap`**, **`secure`**, and **`warehouse`** Hue |
 | `krb5-master-password`, `krb5-kadmin-password` | **`secure`** MIT KDC only |
 
+**Hue `admin` password.** The Secret is the source of truth: on every Hue start, the `hue-migrate` init container creates or updates Django user `admin` to match `hue-admin-password`. New clusters (and existing ones that lack the key) get a generated value on `./hiveCtl.sh start`; read it with `./hiveCtl.sh get passwd <profile> hue-admin`. A password changed in the Hue UI works only until the next Hue restart, when it is reset to the Secret value, and `get passwd` keeps showing the Secret value in the meantime (Hue stores only a hash, so a UI change can't be copied back). To change it:
+
+```bash
+kubectl patch secret hive-credentials -n <profile> --type merge -p '{"stringData":{"hue-admin-password":"<new password>"}}'
+./hiveCtl.sh restart <profile> hue
+```
+
 Treat backup directories as sensitive because they contain both data and credentials. Design, the `warehouse` cleanup/restore test, and open items: [docs/operations-notes.md](docs/operations-notes.md).
 
 **Backup contents (every profile):** the whole namespace, so a restore needs no manual steps.
