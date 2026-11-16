@@ -29,6 +29,7 @@ spec:
       initContainers:
         - name: copy-cassandra-config
           image: jpoblete73/cassandra-kerberos:4.1.12
+          imagePullPolicy: Always
           command: ["sh", "-c", "cp -r /etc/cassandra/. /seed/ && cp /config/* /seed/ && sed -i \"s|\\${TLS_KEYSTORE_PASSWORD}|$(cat /tlssecret/keystore.password)|; s|\\${TLS_TRUSTSTORE_PASSWORD}|$(cat /tlssecret/truststore.password)|\" /seed/cassandra.yaml"]
           volumeMounts:
             - name: cassandra-config
@@ -42,6 +43,7 @@ spec:
       containers:
         - name: cassandra
           image: jpoblete73/cassandra-kerberos:4.1.12
+          imagePullPolicy: Always
           ports:
             - name: cql
               containerPort: 9042
