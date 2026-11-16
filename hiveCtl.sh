@@ -3117,8 +3117,9 @@ for o in json.load(sys.stdin)["items"]:
     o["metadata"] = meta
     o.pop("status", None)
     if kind == "Service":
-        for key in ("clusterIP", "clusterIPs"):
-            o["spec"].pop(key, None)
+        o["spec"].pop("clusterIPs", None)
+        if o["spec"].get("clusterIP") != "None":
+            o["spec"].pop("clusterIP", None)
     if kind == "ServiceAccount":
         o.pop("secrets", None)
     items.append(o)
