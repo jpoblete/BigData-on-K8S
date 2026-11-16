@@ -104,4 +104,4 @@ Resolved since the first run:
 ## Open items
 
 - **Bastion-only branch** `local-backup-20261115-1642` holds the pre-sync local edits (benchmark scripts, earlier Oracle/Postgres/Cassandra work). Review and delete when no longer needed.
-- **Hue login isn't in a Secret.** Hue uses its default first-user Django login (`admin`, set by hand); `hive-credentials.admin-password` is unrelated. Hive and Trino queries from the Hue editor were verified after the 2026-11-16 restore (Hive `iceberg_orc_3_1` = 10,400 rows; Trino `mysql.bigdata.sample_customers` = 3 rows).
+- **Hue login** now comes from `hive-credentials.hue-admin-password` (`./hiveCtl.sh get passwd <profile> hue-admin`); the `hue-migrate` init container creates or updates Django user `admin` to match on every start. A password changed in the Hue UI is reset on the next restart. Hive and Trino queries from the Hue editor were verified after the 2026-11-16 restore (Hive `iceberg_orc_3_1` = 10,400 rows; Trino `mysql.bigdata.sample_customers` = 3 rows).

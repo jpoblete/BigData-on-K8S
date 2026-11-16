@@ -44,6 +44,19 @@ data:
     /config/render-hue-ini.sh
     cd /usr/share/hue
     ./build/env/bin/hue migrate --noinput
+    if [ -n "${HUE_ADMIN_PASSWORD:-}" ]; then
+      ./build/env/bin/hue shell <<'PY'
+    import os
+    from django.contrib.auth.models import User
+    pw = os.environ["HUE_ADMIN_PASSWORD"]
+    u, _ = User.objects.get_or_create(username="admin")
+    if not (u.check_password(pw) and u.is_superuser and u.is_active):
+        u.set_password(pw)
+        u.is_superuser = u.is_staff = u.is_active = True
+        u.save()
+        print("Hue admin password synced from hive-credentials")
+    PY
+    fi
   entrypoint.sh: |
     #!/bin/bash
     set -euo pipefail

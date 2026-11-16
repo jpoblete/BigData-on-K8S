@@ -60,6 +60,12 @@ spec:
                 secretKeyRef:
                   name: hive-credentials
                   key: hue-secret-key
+            - name: HUE_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: hive-credentials
+                  key: hue-admin-password
+                  optional: true
             - name: KRB5_CONFIG
               value: /etc/krb5.conf
             - name: POD_NAME

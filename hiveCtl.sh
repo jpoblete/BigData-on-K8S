@@ -160,6 +160,7 @@ function ensureSecrets(){
    local beeline_password=""
    local hue_mysql_password=""
    local hue_secret_key=""
+   local hue_admin_password=""
    local admin_password=""
    local krb5_master_password=""
    local krb5_kadmin_password=""
@@ -180,6 +181,7 @@ function ensureSecrets(){
    hue_mysql_password="$(generatePassword)"
    hue_secret_key="$(generatePassword)"
    admin_password="admin"
+   hue_admin_password="$(generatePassword)"
    krb5_master_password="$(generatePassword)"
    krb5_kadmin_password="$(generatePassword)"
 
@@ -207,6 +209,7 @@ function ensureSecrets(){
          --from-literal=beeline-password="${beeline_password}" \
          --from-literal=hue-mysql-password="${hue_mysql_password}" \
          --from-literal=hue-secret-key="${hue_secret_key}" \
+         --from-literal=hue-admin-password="${hue_admin_password}" \
          --from-literal=admin-password="${admin_password}" \
          --from-literal=krb5-master-password="${krb5_master_password}" \
          --from-literal=krb5-kadmin-password="${krb5_kadmin_password}" >/dev/null
@@ -220,6 +223,7 @@ function ensureSecrets(){
          --from-literal=beeline-password="${beeline_password}" \
          --from-literal=hue-mysql-password="${hue_mysql_password}" \
          --from-literal=hue-secret-key="${hue_secret_key}" \
+         --from-literal=hue-admin-password="${hue_admin_password}" \
          --from-literal=admin-password="${admin_password}" >/dev/null
    fi
 }
@@ -490,6 +494,12 @@ function ensureHueSecrets(){
 
    case "${namespace}" in standalone|mini|llap|secure|warehouse) ;; *) return 0 ;; esac
    ensureSecrets "${namespace}" || return 1
+   # Hue's init container sets the Django admin login to this value on every start.
+   existing="$(kubectl get secret hive-credentials -n "${namespace}" -o jsonpath='{.data.hue-admin-password}' 2>/dev/null)" || return 1
+   if [ -z "${existing}" ]; then
+      kubectl patch secret hive-credentials -n "${namespace}" --type merge \
+         -p "{\"stringData\":{\"hue-admin-password\":\"$(generatePassword)\"}}" >/dev/null || return 1
+   fi
    existing="$(kubectl get secret hive-credentials -n "${namespace}" -o jsonpath='{.data.hue-mysql-password}' 2>/dev/null)" || return 1
    if [ -n "${existing}" ]; then
       return 0
@@ -3714,7 +3724,7 @@ EOF
 # Overlays that use hive-credentials (namespace name = overlay name).
 function passwdOverlayName(){
    case "${1:-}" in
-      mini|llap|secure|standalone) echo "${1}" ;;
+      mini|llap|secure|standalone|warehouse) echo "${1}" ;;
       *) return 1 ;;
    esac
 }
@@ -3724,6 +3734,7 @@ function passwdSecretKeyForAlias(){
       mysql-root) echo "mysql-root-password" ;;
       hive-mysql) echo "hive-metastore-password" ;;
       hue-mysql) echo "hue-mysql-password" ;;
+      hue-admin) echo "hue-admin-password" ;;
       hue-secret-key) echo "hue-secret-key" ;;
       ranger-admin) echo "ranger-admin-password" ;;
       ranger-db) echo "ranger-db-password" ;;
@@ -3741,11 +3752,11 @@ function passwdSecretKeyForAlias(){
 function passwdAliasesForOverlay(){
    local overlay="$1"
    case "${overlay}" in
-      secure)
-         echo "mysql-root hive-mysql hue-mysql hue-secret-key ranger-admin ranger-db krb5-master krb5-kadmin root hive hadoop beeline admin"
+      secure|warehouse)
+         echo "mysql-root hive-mysql hue-admin hue-mysql hue-secret-key ranger-admin ranger-db krb5-master krb5-kadmin root hive hadoop beeline admin"
          ;;
       standalone|llap|mini)
-         echo "mysql-root hive-mysql hue-mysql hue-secret-key root hive hadoop beeline admin"
+         echo "mysql-root hive-mysql hue-admin hue-mysql hue-secret-key root hive hadoop beeline admin"
          ;;
       *)
          return 1
@@ -3770,6 +3781,7 @@ function listPasswd(){
       done <<'EOF'
 mysql-root mysql-root-password MySQL root
 hive-mysql hive-metastore-password MySQL hive metastore user
+hue-admin hue-admin-password Hue UI user admin
 hue-mysql hue-mysql-password Hue MySQL user
 hue-secret-key hue-secret-key Hue Django secret (not a login password)
 ranger-admin ranger-admin-password Ranger UI user admin
@@ -3780,19 +3792,19 @@ root root-password Lab bootstrap root slot
 hive hive-password Lab Hive service / JDBC material
 hadoop hadoop-password Lab Hadoop service material
 beeline beeline-password Beeline JDBC (often same as hive at create)
-admin admin-password Lab admin slot (Hue/Hadoop; not Ranger UI)
+admin admin-password Lab admin slot (not the Hue or Ranger UI login)
 EOF
       echo ""
       echo "Profiles:"
-      echo "  secure:     mysql-root hive-mysql hue-mysql hue-secret-key ranger-admin ranger-db krb5-master krb5-kadmin root hive hadoop beeline admin"
-      echo "  standalone, mini, llap: mysql-root hive-mysql hue-mysql hue-secret-key root hive hadoop beeline admin"
+      echo "  secure, warehouse: mysql-root hive-mysql hue-admin hue-mysql hue-secret-key ranger-admin ranger-db krb5-master krb5-kadmin root hive hadoop beeline admin"
+      echo "  standalone, mini, llap: mysql-root hive-mysql hue-admin hue-mysql hue-secret-key root hive hadoop beeline admin"
       echo ""
       echo "List keys present in a cluster:  hiveCtl list passwd <overlay>"
       return 0
    fi
 
    passwdOverlayName "${overlay}" >/dev/null || {
-      echo "Unknown overlay '${overlay}' (use mini, llap, secure, or standalone)"
+      echo "Unknown overlay '${overlay}' (use mini, llap, secure, standalone, or warehouse)"
       return 1
    }
    requireNamespace "${overlay}" || return 1

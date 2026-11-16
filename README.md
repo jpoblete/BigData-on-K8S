@@ -352,6 +352,7 @@ Typical keys in Secret **`hive-credentials`** (namespace = profile name):
 | `hive-metastore-password` | MySQL user for the Hive metastore schema |
 | `mysql-root-password` | MySQL `root` |
 | `admin-password` | Documented copy of the fixed lab **`admin`** password (always **`admin`**) |
+| `hue-admin-password` | Hue UI user **`admin`**; Hue's init container applies it on every start (`./hiveCtl.sh get passwd <profile> hue-admin`) |
 | `hue-mysql-password`, `hue-secret-key` | **`standalone`**, **`mini`**, **`llap`**, **`secure`**, and **`warehouse`** Hue |
 | `krb5-master-password`, `krb5-kadmin-password` | **`secure`** MIT KDC only |
 
