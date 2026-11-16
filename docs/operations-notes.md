@@ -58,7 +58,7 @@ Backups in the older formats (`mysql-hive.sql` + `hdfs-backup.tgz`, or `standalo
 
 `./hiveCtl.sh cleanup <profile>` offers a backup, asks for the profile name, runs `stopStack`, then scales down any workload `stopStack` doesn't list (optional or hand-applied components would otherwise keep their PVCs from being deleted), deletes all PVCs, their PVs, and the namespace.
 
-On non-Kind clusters, cleanup can't remove local-path data from node disks (`docker not available; skipping ...`). The directories under `/var/local-path-provisioner/` on each node remain until removed by hand.
+On non-Kind clusters (no `docker`), cleanup runs one short-lived pod per node in `local-path-storage` that removes `pvc-*_<namespace>_*` under the provisioner base path, so node disks are left clean.
 
 ## Test run: `warehouse` cleanup → restore (2026-11-15)
 
@@ -86,13 +86,22 @@ Problems found and fixed during the run:
 | Backup stripped `clusterIP: None`, so headless Services came back as normal ClusterIP Services (per-pod DNS such as `hiveserver2-0.hiveserver2-headless` broke) | Backup keeps `clusterIP: None`; the five affected Services were re-created headless |
 | `main` started `cassandra-pw`, whose image `hive-on-k8s/cassandra-password:4.1.12` is in no registry | `cassandra-pw` retired; `cassandra-trino` (overlay `overlays/warehouse/cassandra-trino`) starts in its place; Trino reads `cassandra-trino-role` |
 
+## Second test run: clean slate → restore (2026-11-16)
+
+Cleanup with backup (`backups/warehouse-20261116-164212`, the only backup kept on the bastion), then `warehouse` and `secure` namespaces, their PVs, and node directories were removed. Restore brought back all 16 StatefulSets with the same row counts, Hive metastore, KDC principals, and Hue users as the baseline. Cassandra, Oracle, and Postgres PVCs came back on `block-storage`.
+
+Resolved since the first run:
+
+| Item | Resolution |
+|---|---|
+| `start`/`stop warehouse` skipped `llapdaemon`, `postgres`, `oracle` | Both now include them; `start` applies the Postgres/Oracle `apply-bigdata-schema.sh` |
+| `cassandra-trino` provisioning was manual | `start` generates TLS Secrets and `cassandra-trino-role`, creates the role, and adds `trino:1` replication (with `nodetool rebuild`) |
+| Ranger default image didn't run on amd64 | `jpoblete73/ranger:2.4.0` is multi-arch (arm64 from `apache/ranger:2.4.0`, amd64 from `jpoblete73/ranger:2.4.0-amd64`); keep the `-amd64` tag, it backs the manifest list |
+| `deployments.apps "trino" not found` | `waitForReady` falls back to workloads labelled `app=<service>` |
+| Released `secure` PVs | Deleted with their node directories |
+| Cassandra init failed with `exec format error` on one node | A stale wrong-arch `cassandra-kerberos:4.1.12` was cached there; both Cassandra overlays use `imagePullPolicy: Always` |
+
 ## Open items
 
-- **Backups taken before 2026-11-16 restore headless Services as ClusterIP.** `backups/warehouse-20261115-171359` and `-173211` on the bastion have this flaw. Take a fresh `./hiveCtl.sh backup warehouse` as the restore point and delete those two.
-- **`start`/`stop warehouse` don't manage `llapdaemon`, `postgres`, `oracle`.** They run on the live cluster but were started individually. Postgres and Oracle also need their `components/*/setup/apply-bigdata-schema.sh` on a fresh volume. Fresh cluster bring-up from zero is still unverified.
-- **`cassandra-trino` provisioning is manual.** `start` skips it until `cassandra-trino-tls` and `cassandra-trino-role` exist; certificates, keyspace replication, and `nodetool rebuild` follow `docs/cassandra-trino-two-dc-design.md`.
-- **Repo default Ranger image `apache/ranger:2.4.0` doesn't run on these amd64 nodes.** The cluster runs `jpoblete73/ranger:2.4.0-amd64` via `RANGER_ADMIN_IMAGE`. Consider making it the overlay default for `warehouse`.
-- **Released `secure` PVs.** Six `Retain` PVs from a deleted `secure` namespace are `Released` (`krb5kdc`, `mysql`, `pvc-hdfs-nn`, three DataNodes). Delete them, and their node directories, if that data isn't needed.
-- **Harmless message:** `restart warehouse trino` prints `deployments.apps "trino" not found` because `waitForReady` looks for a workload named `trino`; the coordinator is `trino-coordinator`.
 - **Bastion-only branch** `local-backup-20261115-1642` holds the pre-sync local edits (benchmark scripts, earlier Oracle/Postgres/Cassandra work). Review and delete when no longer needed.
-- **Hue UI queries** for Hive and Trino remain unverified (see [warehouse-profile.md](warehouse-profile.md#status)).
+- **Hue UI queries** for Hive and Trino remain unverified (see [warehouse-profile.md](warehouse-profile.md#status)). Hue uses its default first-user Django login; the `admin` password isn't stored in any Secret (`hive-credentials.admin-password` doesn't match).
