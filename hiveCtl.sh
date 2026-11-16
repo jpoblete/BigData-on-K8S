@@ -804,7 +804,7 @@ function stopSecureHadoop(){
 }
 function profileHasHue(){
    case "${1:-}" in
-      standalone|mini|llap|secure) return 0 ;;
+      standalone|mini|llap|secure|warehouse) return 0 ;;
       *) return 1 ;;
    esac
 }
