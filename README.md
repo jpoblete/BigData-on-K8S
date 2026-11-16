@@ -133,13 +133,17 @@ secure only:
   disk:            50 GB+ host Docker VM (see below; PVCs alone are ~51 Gi on secure)
   worker nodes:    3+ for DataNodes; 2+ labeled llap (same as llap profile) for LLAP daemons
 
-warehouse only (estimate; not yet measured end to end):
-  host RAM:        40 GB+
-  Kubernetes RAM:  32-36 GB+
-  CPUs:            10+
-  disk:            60 GB+ host Docker VM (secure PVCs plus 4 Cassandra PVCs)
-  worker nodes:    3+ for DataNodes; schedulable room for 3 Cassandra + Trino (1 coordinator, 2 workers)
+warehouse only (measured on the live cluster, Nov 2026; use a real cluster):
+  pod requests:    ~7 CPU, ~31 GiB RAM (Trino and cassandra-trino set none, so real need is higher)
+  pod limits:      ~28 CPU, ~67 GiB RAM
+  idle usage:      ~0.5 CPU, ~20.6 GiB RAM, before any query
+  Kubernetes RAM:  48 GiB+ for meaningful testing (64 GiB+ comfortable)
+  CPUs:            12+
+  disk:            ~116 GiB of PVCs requested (Oracle 20, Cassandra 4x10, HDFS 4x10, MySQL 10, Postgres 5, KDC 1)
+  worker nodes:    5+ (3 DataNodes, 3 Cassandra, 2 labeled llap); amd64 recommended
 ```
+
+> **`warehouse` is memory heavy. Use a real multi-node cluster for any meaningful testing, not kind.** On a 36 GB Apple M3 Pro, Docker Desktop gets ~23.4 GiB, and every kind node reports that same amount. The scheduler then sees ~140 GiB, places all pods, and they hit OOM kills. The idle stack alone (~20.6 GiB) nearly fills the VM. Several images are amd64-only (`apache/hadoop:3.4.1`, `gethue/hue:latest`, `jpoblete73/cassandra-kerberos:4.1.12`, `jpoblete73/oracle-free:23.9.0.0-amd64`), so on Apple Silicon they run under emulation and are much slower. In our tests the **`llap`** profile runs fine on kind; it is the largest profile we recommend locally.
 
 **`secure`** is **`llap` + Kerberos** (same ZooKeeper, **2×** Metastore / HiveServer2 / LLAP daemon, and Hue; HDFS **1 NN + 3 DN**; realm **`SECURE.LAB`**). **`warehouse`** is the `secure` stack plus Cassandra and Trino (realm **`WAREHOUSE.LAB`**). Only one of **`llap`**, **`secure`**, or **`warehouse`** should be up on a lab sized for the rows above.
 

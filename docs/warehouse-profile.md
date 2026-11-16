@@ -5,6 +5,8 @@
 
 The `warehouse` profile is a Kerberos-secured data warehouse in the `warehouse` namespace, realm `WAREHOUSE.LAB`. It builds on the [`secure`](secure-profile.md) Hive stack and adds **Cassandra** and **Trino**, both queryable from **Hue**.
 
+> **Resource warning:** `warehouse` is memory heavy. It requests ~7 CPU and ~31 GiB RAM (limits ~67 GiB) and uses ~20.6 GiB at idle. Run it on a real cluster with 48 GiB+ of Kubernetes memory for meaningful testing; it does not fit a kind / Docker Desktop lab on a laptop. In our tests the `llap` profile runs fine on kind. Full sizing: [README hardware requirements](../README.md#hardware-requirements).
+
 ## Components
 
 | Layer | Component | Image / source |
