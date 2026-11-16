@@ -1377,6 +1377,9 @@ function stopHuePortForward(){
    fi
    rm -f "${pidfile}"
 }
+function printHueLoginHint(){
+   echo "Hue login (${1}): user admin, password: ./hiveCtl.sh get passwd ${1} hue-admin"
+}
 # Expose Hue on localhost after hue is up (skipped when HIVECTL_HUE_PORT_FORWARD=0).
 function ensureHuePortForward(){
    local namespace="${1:-llap}"
@@ -1387,12 +1390,14 @@ function ensureHuePortForward(){
    if huePortForwardDisabled; then
       stopHuePortForward "${namespace}"
       echo "Hue port-forward disabled (HIVECTL_HUE_PORT_FORWARD=${HIVECTL_HUE_PORT_FORWARD})"
+      kubectl get svc hue -n "${namespace}" >/dev/null 2>&1 && printHueLoginHint "${namespace}"
       return 0
    fi
 
    if ! kubectl get svc hue -n "${namespace}" >/dev/null 2>&1; then
       return 0
    fi
+   printHueLoginHint "${namespace}"
 
    port="$(hueLocalPort "${namespace}")"
    pidfile="$(huePortForwardPidFile "${namespace}")"
