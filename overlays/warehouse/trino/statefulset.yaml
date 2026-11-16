@@ -113,7 +113,7 @@ spec:
             defaultMode: 0440
         - name: cassandra-creds
           secret:
-            secretName: cassandra-pw-trino
+            secretName: cassandra-trino-role
             defaultMode: 0440
         - name: mysql-creds
           secret:
@@ -257,7 +257,7 @@ spec:
             defaultMode: 0440
         - name: cassandra-creds
           secret:
-            secretName: cassandra-pw-trino
+            secretName: cassandra-trino-role
             defaultMode: 0440
         - name: mysql-creds
           secret:

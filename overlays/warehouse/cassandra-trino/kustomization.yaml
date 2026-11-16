@@ -17,6 +17,6 @@ configMapGenerator:
     options:
       disableNameSuffixHash: true
     files:
-      - krb5.conf=../../krb5.conf
+      - krb5.conf=../krb5.conf
 generatorOptions:
   disableNameSuffixHash: true

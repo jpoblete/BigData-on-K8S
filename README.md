@@ -64,7 +64,7 @@ secure:       apache/hive:nightly (same LLAP stack as llap: Metastore x2, HiveSe
               gethue/hue:latest (Hue → HS2 with SASL/Kerberos backend)
 warehouse:    apache/hive:nightly, apache/hadoop:3.4.1, debian:bookworm-slim (MIT KDC)
               cassandra:4.1.12 + Kerberos authenticator (hive-on-k8s/cassandra-kerberos:4.1.12, custom)
-              cassandra:4.1.12 password node (hive-on-k8s/cassandra-password:4.1.12, custom)
+              cassandra-trino: 1-node `trino` DC (password + mTLS) that Trino reads
               trinodb/trino:484 (Hive + Cassandra catalogs)
               hive-on-k8s/hue-trino (custom: gethue/hue + SQLAlchemy 1.4 + sqlalchemy-trino)
 ```
@@ -250,7 +250,7 @@ standalone  →  mini  →  llap  →  secure  →  warehouse
 | **Realm / namespace** | `WAREHOUSE.LAB` · namespace `warehouse` |
 | **Adds (on top of `secure`)** | Kerberos Cassandra 4.1.12 (custom authenticator); a password-auth Cassandra node for Trino; Trino 484 with `hive` and `cassandra` catalogs; Hue on a custom image with SQLAlchemy 1.4 + `sqlalchemy-trino` |
 | **Stack** | `krb5kdc → hadoop-namenode (+3 datanode) → zookeeper → cassandra (kerberos) → mysql → ranger → hivemetastore → hiveserver2 → trino → hue` |
-| **Components** | `overlays/warehouse/*` · `docker/cassandra-kerberos`, `docker/cassandra-password`, `docker/hue-trino` |
+| **Components** | `overlays/warehouse/*` · `docker/cassandra-kerberos`, `docker/hue-trino` |
 | **Start / stop** | `./hiveCtl.sh start warehouse` · `./hiveCtl.sh stop warehouse` (reverse order) |
 | **UIs** | Hue **http://localhost:8889** ([Browser UIs](#browser-uis-and-kind-standalone--mini--llap--secure--warehouse)) |
 | **Try it** | Hue → Trino interpreter (`hive` and `cassandra` catalogs) and Hue → Hive (`hiveserver2`) |

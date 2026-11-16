@@ -257,39 +257,6 @@ function waitForLabKeytabs(){
    return 1
 }
 # Copy lab keytabs from the KDC PVC into Secret kerberos-keytabs for pod mounts.
-# Warehouse Cassandra password node (cassandra-pw): create the Trino client and superuser
-# Secrets if missing, then create the trino_pw role on the node from the Trino Secret.
-# Idempotent: existing Secrets are never rotated. Values are generated in-cluster and never printed.
-function ensureCassandraPasswordSecrets(){
-   local namespace="$1"
-   local trino_pw=""
-   local super_pw=""
-
-   if ! kubectl get secret cassandra-pw-trino -n "${namespace}" >/dev/null 2>&1; then
-      trino_pw="$(python3 -c 'import secrets; print(secrets.token_urlsafe(24))')"
-      kubectl create secret generic cassandra-pw-trino -n "${namespace}" \
-         --from-literal=username=trino_pw --from-literal=password="${trino_pw}" >/dev/null || return 1
-      echo "Created Secret cassandra-pw-trino (${namespace})"
-   fi
-   if ! kubectl get secret cassandra-pw-superuser -n "${namespace}" >/dev/null 2>&1; then
-      super_pw="$(python3 -c 'import secrets; print(secrets.token_urlsafe(24))')"
-      kubectl create secret generic cassandra-pw-superuser -n "${namespace}" \
-         --from-literal=username=cassandra --from-literal=password="${super_pw}" >/dev/null || return 1
-      echo "Created Secret cassandra-pw-superuser (${namespace})"
-   fi
-   return 0
-}
-# Create the trino_pw role on cassandra-pw-0 using the Trino Secret value (from the Secret, not argv).
-function ensureCassandraPasswordRole(){
-   local namespace="$1"
-   local pw=""
-   pw="$(kubectl get secret cassandra-pw-trino -n "${namespace}" -o jsonpath='{.data.password}' | base64 -d)" || return 1
-   kubectl exec cassandra-pw-0 -n "${namespace}" -c cassandra -- cqlsh -u cassandra -p "$(kubectl get secret cassandra-pw-superuser -n "${namespace}" -o jsonpath='{.data.password}' | base64 -d)" \
-      -e "CREATE ROLE IF NOT EXISTS trino_pw WITH PASSWORD = '${pw}' AND LOGIN = true AND SUPERUSER = false;" >/dev/null 2>&1 || return 1
-   pw=""
-   echo "Ensured role trino_pw on cassandra-pw (${namespace})"
-   return 0
-}
 function ensureKerberosKeytabSecret(){
    local namespace="$1"
    local tmpdir=""
@@ -796,8 +763,9 @@ function startOverlay(){
    if [ "${target}" = "warehouse_cassandra" ]; then
       ensureWarehouseCassandraKindImage || return 1
    fi
-   if [ "${target}" = "warehouse_cassandra-pw" ]; then
-      ensureCassandraPasswordSecrets "${namespace}" || return 1
+   if [ "${target}" = "warehouse_cassandra-trino" ] && ! kubectl get secret cassandra-trino-tls cassandra-trino-role -n "${namespace}" >/dev/null 2>&1; then
+      echo "Skipping ${target}: Secrets cassandra-trino-tls and cassandra-trino-role are provisioned out-of-band (see docs/cassandra-trino-two-dc-design.md)"
+      return 0
    fi
 
    if [ "${target}" = "secure_hadoop-namenode" ] || [ "${target}" = "warehouse_hadoop-namenode" ]; then
@@ -844,9 +812,6 @@ function startOverlay(){
          waitForReady "${namespace}" "${service}"
          if [ "${namespace}" = "secure" ] && [ "${service}" = "krb5kdc" ]; then
             ensureKerberosKeytabSecret "${namespace}" || return 1
-         fi
-         if [ "${namespace}" = "warehouse" ] && [ "${service}" = "cassandra-pw" ]; then
-            ensureCassandraPasswordRole "${namespace}" || return 1
          fi
          ;;
       1)
@@ -2441,7 +2406,7 @@ function startStack(){
          ensureKrb5Secrets "${namespace}" || return 1
          ensureHueSecrets "${namespace}" || return 1
          ensureAdminSecrets "${namespace}" || return 1
-         components=(krb5kdc zookeeper hadoop-namenode cassandra cassandra-pw mysql)
+         components=(krb5kdc zookeeper hadoop-namenode cassandra cassandra-trino mysql)
          if [ "${HIVECTL_WAREHOUSE_RANGER:-1}" = "1" ]; then
             components+=(ranger)
          fi
@@ -2513,7 +2478,7 @@ function stopStack(){
          if [ $? -eq 0 ]; then
             components+=(ranger)
          fi
-         components+=(mysql cassandra hadoop-namenode zookeeper krb5kdc)
+         components+=(mysql cassandra-trino cassandra hadoop-namenode zookeeper krb5kdc)
          ;;
       *)
          components=(hiveserver2 hivemetastore mysql hadoop)
