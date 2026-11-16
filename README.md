@@ -355,7 +355,7 @@ Typical keys in Secret **`hive-credentials`** (namespace = profile name):
 | `hue-mysql-password`, `hue-secret-key` | **`standalone`**, **`mini`**, **`llap`**, **`secure`**, and **`warehouse`** Hue |
 | `krb5-master-password`, `krb5-kadmin-password` | **`secure`** MIT KDC only |
 
-Treat backup directories as sensitive because they contain both data and credentials.
+Treat backup directories as sensitive because they contain both data and credentials. Design, the `warehouse` cleanup/restore test, and open items: [docs/operations-notes.md](docs/operations-notes.md).
 
 **Backup contents (every profile):** the whole namespace, so a restore needs no manual steps.
 

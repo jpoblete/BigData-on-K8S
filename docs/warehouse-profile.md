@@ -19,6 +19,7 @@ The `warehouse` profile is a Kerberos-secured data warehouse in the `warehouse` 
 | Oracle | `bigdata` for Trino (user/schema `bigdata`, quoted in SQL) | `container-registry.oracle.com/database/free:23.9.0.0-amd64` (23ai Free, component `components/oracle`) |
 
 Trino database catalogs (MySQL, PostgreSQL, Oracle) and their setup are in [trino-database-catalogs.md](trino-database-catalogs.md).
+Backup, restore, cleanup, and live-cluster notes are in [operations-notes.md](operations-notes.md).
 
 ### Image sources (portability)
 
