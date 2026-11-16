@@ -3832,12 +3832,12 @@ function getPasswd(){
    local key=""
    local value=""
 
-   if passwdOverlayName "${2:-}" >/dev/null 2>&1; then
-      overlay="${2}"
-      alias="${3:-}"
+   if passwdOverlayName "${1:-}" >/dev/null 2>&1; then
+      overlay="${1}"
+      alias="${2:-}"
    else
       overlay="${HIVECTL_PASSWD_OVERLAY:-secure}"
-      alias="${2:-}"
+      alias="${1:-}"
    fi
 
    if [ -z "${alias}" ]; then
