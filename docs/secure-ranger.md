@@ -8,7 +8,7 @@ See [secure-profile.md](secure-profile.md) for the running stack.
 
 | Phase | What | Repo state |
 |-------|------|------------|
-| **1** | Ranger Admin + MySQL (`apache/ranger:2.4.0`) | **`components/ranger`**, **`overlays/secure/ranger`** — opt-in |
+| **1** | Ranger Admin + MySQL (`jpoblete73/ranger:2.4.0`) | **`components/ranger`**, **`overlays/secure/ranger`** — opt-in |
 | **2** | Hive plugin on HS2 (`apache/hive:nightly`) | **`docker/hive-ranger`**, **`overlays/secure/hiveserver2-ranger`**, `HIVECTL_SECURE_RANGER_HS2=1` |
 | **3** | HDFS plugin on NameNode | Pending |
 | **4** | HMS pre-event + Hue | Pending |
@@ -46,7 +46,7 @@ kubectl get secret hive-credentials -n secure -o jsonpath='{.data.ranger-admin-p
 
 1. **`ranger-mysql-init` Job** — creates DB `ranger` and user `rangeradmin` on `mysql.secure.svc.cluster.local`.
 2. **Init container** — renders `install.properties` from templates + secrets (root + ranger DB passwords).
-3. **`ranger-0` StatefulSet** — runs upstream **`apache/ranger:2.4.0`** (Admin only; **DB audit**, no Solr).
+3. **`ranger-0` StatefulSet** — runs **`jpoblete73/ranger:2.4.0`**, a multi-arch tag over upstream **`apache/ranger:2.4.0`** (arm64) and **`docker/ranger-admin`** (amd64) (Admin only; **DB audit**, no Solr).
 
 **Service Manager UI:** The grid lists every row in **`x_service_def`**. Ranger 2.4 only *creates* embedded plugin types listed in **`policymgr_supportedcomponents`** / **`ranger.supportedcomponents`** (comma-separated: **`hive,hdfs`** here — the install template comment about semicolons is wrong upstream). That filter runs **once** when the Admin JVM bootstraps the DB; changing XML later does not remove types already inserted. After upgrading this overlay, re-seed once:
 
@@ -65,7 +65,7 @@ Then Service Manager should show only **HDFS** and **Hadoop SQL** (Hive). No `de
 ./hiveCtl.sh start secure ranger    # re-runs MySQL init Job
 ```
 
-**Apple Silicon / Kind:** Docker Hub’s **`apache/ranger:2.4.0`** is **linux/amd64**. Kind on Mac may run it under emulation (slower first start). Hive **nightly** remains **arm64** with **x86_64** Hadoop natives — separate issue for Phase 2.
+**Platforms:** upstream **`apache/ranger:2.4.0`** is published for **linux/arm64** only; **`jpoblete73/ranger:2.4.0`** adds the **linux/amd64** build from **`docker/ranger-admin`**, so Kind on Apple Silicon and amd64 clusters use the same tag. Hive **nightly** remains **arm64** with **x86_64** Hadoop natives — separate issue for Phase 2.
 
 **Smoke checks**
 

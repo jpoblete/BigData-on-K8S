@@ -63,7 +63,7 @@ function help(){
    echo "Profile secure: llap-shaped Hive (2 HMS, 2 HS2, 2 LLAP) + KDC, NN + 3 DNs, ZK, Hue (./hiveCtl.sh start secure)"
    echo "Ranger (secure, optional): HIVECTL_SECURE_RANGER=1 ./hiveCtl.sh start secure   or: ./hiveCtl.sh start secure ranger"
    echo "  NodePort 30680. Browser URL: HIVECTL_RANGER_EXTERNAL_URL (default http://127.0.0.1:6080)"
-   echo "  amd64 clusters: RANGER_ADMIN_IMAGE=hive-on-k8s/ranger:2.4.0-amd64 (docker/ranger-admin). Hub tag is arm64 only."
+   echo "  Ranger Admin image: jpoblete73/ranger:2.4.0 (arm64 + amd64). Override: RANGER_ADMIN_IMAGE=<image>"
    echo "Ranger Hive plugin (secure HS2 Phase 2): build docker/hive-ranger, then HIVECTL_SECURE_RANGER_HS2=1 ./hiveCtl.sh start secure hiveserver2"
    echo "  With HS2 plugin, hiveCtl creates secure_hive + lab admin policies (HIVECTL_SECURE_RANGER_BOOTSTRAP_HIVE=auto; 0 to skip)"
    echo "  Image: HIVE_RANGER_IMAGE=hive-on-k8s/hive-ranger:2.4.0-nightly (default)"
@@ -255,6 +255,177 @@ function waitForLabKeytabs(){
    done
    echo "Timed out waiting for lab keytabs on krb5kdc in namespace '${namespace}'"
    return 1
+}
+# Warehouse database passwords for the Trino catalogs (MySQL, Postgres, Oracle) and the database admins.
+function ensureWarehouseDatabaseSecrets(){
+   local namespace="$1"
+   local key=""
+   local patch=""
+
+   [ "${namespace}" = "warehouse" ] || return 0
+   ensureSecrets "${namespace}" || return 1
+   for key in mysql-trino-password postgres-password postgres-trino-password oracle-password oracle-trino-password; do
+      if [ -z "$(kubectl get secret hive-credentials -n "${namespace}" -o jsonpath="{.data.${key}}" 2>/dev/null)" ]; then
+         # Oracle requires upper case, lower case, and a digit.
+         patch="${patch:+${patch},}\"${key}\":\"$(generateRangerPassword)\""
+      fi
+   done
+   [ -n "${patch}" ] || return 0
+   kubectl patch secret hive-credentials -n "${namespace}" --type merge -p "{\"stringData\":{${patch}}}" >/dev/null
+}
+# Apply the bigdata schema and trino user for a warehouse Trino database (idempotent).
+function applyWarehouseDatabaseSchema(){
+   local namespace="$1"
+   local service="$2"
+   local script="./components/${service}/setup/apply-bigdata-schema.sh"
+
+   [ "${namespace}" = "warehouse" ] && [ -f "${script}" ] || return 0
+   echo "Applying ${service} bigdata schema and trino user ..."
+   NS="${namespace}" POD="${service}-0" bash "${script}"
+}
+# trino Cassandra DC (docs/cassandra-trino-two-dc-design.md): internal CA, server and Trino client
+# certificates, and the Trino role password. Existing Secrets are kept.
+function ensureCassandraTrinoSecrets(){
+   local namespace="$1"
+   local realm=""
+   local tmpdir=""
+   local pod="cassandra-trino-tls-gen"
+   local server_ks_pw=""
+   local server_ts_pw=""
+   local client_ks_pw=""
+   local client_ts_pw=""
+   local domain="${namespace}.svc.cluster.local"
+
+   if kubectl get secret cassandra-trino-tls trino-cassandra-tls trino-cassandra-client-tls cassandra-trino-role \
+      -n "${namespace}" >/dev/null 2>&1; then
+      return 0
+   fi
+   if ! command -v openssl >/dev/null 2>&1; then
+      echo "openssl is required to create the cassandra-trino certificates"
+      return 1
+   fi
+   echo "Provisioning cassandra-trino certificates and Trino role Secrets ..."
+   realm="$(echo "${namespace}" | tr '[:lower:]' '[:upper:]').LAB"
+   server_ks_pw="$(generatePassword)"
+   server_ts_pw="$(generatePassword)"
+   client_ks_pw="$(generatePassword)"
+   client_ts_pw="$(generatePassword)"
+   tmpdir="$(mktemp -d)"
+   trap 'rm -rf "${tmpdir}"' RETURN
+   (
+      cd "${tmpdir}" || exit 1
+      openssl req -x509 -newkey rsa:2048 -nodes -keyout ca.key -out ca.crt -days 3650 -subj "/CN=${namespace}-internal-ca" 2>/dev/null &&
+      openssl req -newkey rsa:2048 -nodes -keyout server.key -out server.csr -subj "/CN=cassandra-trino" 2>/dev/null &&
+      printf 'subjectAltName=DNS:cassandra-trino,DNS:cassandra-trino-headless.%s,DNS:cassandra-trino-0.cassandra-trino-headless.%s\n' \
+         "${domain}" "${domain}" > server.ext &&
+      openssl x509 -req -in server.csr -CA ca.crt -CAkey ca.key -CAcreateserial -out server.crt -days 825 -extfile server.ext 2>/dev/null &&
+      openssl req -newkey rsa:2048 -nodes -keyout client.key -out client.csr -subj "/CN=trino-client" 2>/dev/null &&
+      openssl x509 -req -in client.csr -CA ca.crt -CAkey ca.key -CAcreateserial -out client.crt -days 825 2>/dev/null &&
+      openssl pkcs12 -export -in server.crt -inkey server.key -name cassandra-trino -out server.p12 -passout "pass:${server_ks_pw}" &&
+      openssl pkcs12 -export -in client.crt -inkey client.key -name trino-client -out client.p12 -passout "pass:${client_ks_pw}"
+   ) || return 1
+
+   # Java keystores are built with the keytool of the Cassandra image.
+   kubectl run "${pod}" -n "${namespace}" --image=jpoblete73/cassandra-kerberos:4.1.12 --restart=Never \
+      --command -- sleep 600 >/dev/null || return 1
+   kubectl wait --for=condition=Ready "pod/${pod}" -n "${namespace}" --timeout=300s >/dev/null || return 1
+   local file=""
+   for file in ca.crt server.p12 client.p12; do
+      kubectl cp "${tmpdir}/${file}" "${namespace}/${pod}:/tmp/${file}" >/dev/null || return 1
+   done
+   # shellcheck disable=SC2016
+   kubectl exec "${pod}" -n "${namespace}" -- env SKP="${server_ks_pw}" STP="${server_ts_pw}" CKP="${client_ks_pw}" CTP="${client_ts_pw}" sh -c '
+      cd /tmp &&
+      keytool -importkeystore -noprompt -srckeystore server.p12 -srcstoretype PKCS12 -srcstorepass "$SKP" -destkeystore server-keystore.jks -deststoretype JKS -deststorepass "$SKP" >/dev/null 2>&1 &&
+      keytool -importcert -noprompt -alias ca -file ca.crt -keystore server-truststore.jks -storetype JKS -storepass "$STP" >/dev/null 2>&1 &&
+      keytool -importkeystore -noprompt -srckeystore client.p12 -srcstoretype PKCS12 -srcstorepass "$CKP" -destkeystore client-keystore.jks -deststoretype JKS -deststorepass "$CKP" >/dev/null 2>&1 &&
+      keytool -importcert -noprompt -alias ca -file ca.crt -keystore client-truststore.jks -storetype JKS -storepass "$CTP" >/dev/null 2>&1' || return 1
+   for file in server-keystore.jks server-truststore.jks client-keystore.jks client-truststore.jks; do
+      kubectl cp "${namespace}/${pod}:/tmp/${file}" "${tmpdir}/${file}" >/dev/null || return 1
+   done
+   kubectl delete pod "${pod}" -n "${namespace}" --now >/dev/null
+
+   kubectl create secret generic cassandra-trino-tls -n "${namespace}" \
+      --from-file=keystore.jks="${tmpdir}/server-keystore.jks" --from-literal=keystore.password="${server_ks_pw}" \
+      --from-file=truststore.jks="${tmpdir}/server-truststore.jks" --from-literal=truststore.password="${server_ts_pw}" \
+      --dry-run=client -o yaml | kubectl apply -f - >/dev/null || return 1
+   kubectl create secret generic trino-cassandra-tls -n "${namespace}" \
+      --from-file=keystore.jks="${tmpdir}/client-keystore.jks" --from-literal=keystore.password="${client_ks_pw}" \
+      --from-file=truststore.jks="${tmpdir}/client-truststore.jks" --from-literal=truststore.password="${client_ts_pw}" \
+      --dry-run=client -o yaml | kubectl apply -f - >/dev/null || return 1
+   kubectl create secret generic trino-cassandra-client-tls -n "${namespace}" \
+      --from-file=ca.crt="${tmpdir}/ca.crt" --from-file=client.crt="${tmpdir}/client.crt" --from-file=client.key="${tmpdir}/client.key" \
+      --dry-run=client -o yaml | kubectl apply -f - >/dev/null || return 1
+   if ! kubectl get secret cassandra-trino-role -n "${namespace}" >/dev/null 2>&1; then
+      kubectl create secret generic cassandra-trino-role -n "${namespace}" \
+         --from-literal=username="trino@${realm}" --from-literal=password="$(generatePassword)" >/dev/null || return 1
+   fi
+}
+# On cassandra-trino-0: create the Trino superuser role, add the trino DC to every replicated keyspace,
+# and stream existing data into the DC when a keyspace was added. Idempotent.
+function ensureCassandraTrinoRole(){
+   local namespace="$1"
+   local result=""
+
+   secret_value(){ kubectl get secret "$1" -n "${namespace}" -o jsonpath="{.data.${2//./\\.}}" | base64 -d; }
+   # shellcheck disable=SC2016
+   result="$(kubectl exec -i cassandra-trino-0 -n "${namespace}" -c cassandra -- \
+      env CA="$(secret_value trino-cassandra-client-tls ca.crt)" CRT="$(secret_value trino-cassandra-client-tls client.crt)" \
+          KEY="$(secret_value trino-cassandra-client-tls client.key)" \
+          ROLE="$(secret_value cassandra-trino-role username)" ROLE_PW="$(secret_value cassandra-trino-role password)" \
+      python3 - <<'PY'
+import os, socket, ssl, tempfile, time
+from cassandra.auth import PlainTextAuthProvider
+from cassandra.cluster import Cluster
+
+d = tempfile.mkdtemp()
+for k in ("CA", "CRT", "KEY"):
+    with open(os.path.join(d, k), "w") as f:
+        f.write(os.environ[k])
+ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+ctx.check_hostname = False
+ctx.load_verify_locations(os.path.join(d, "CA"))
+ctx.load_cert_chain(os.path.join(d, "CRT"), os.path.join(d, "KEY"))
+host = socket.gethostbyname(socket.gethostname())
+role, role_pw = os.environ["ROLE"], os.environ["ROLE_PW"]
+
+def connect(user, password):
+    return Cluster([host], ssl_context=ctx, auth_provider=PlainTextAuthProvider(user, password),
+                   connect_timeout=30, control_connection_timeout=30).connect()
+
+for attempt in range(30):
+    try:
+        try:
+            s = connect(role, role_pw)
+        except Exception:
+            s = connect("cassandra", "cassandra")
+            s.execute("CREATE ROLE IF NOT EXISTS %s WITH SUPERUSER = true AND LOGIN = true AND PASSWORD = %s", (role, role_pw))
+            s.execute("ALTER ROLE %s WITH SUPERUSER = true AND LOGIN = true AND PASSWORD = %s", (role, role_pw))
+        break
+    except Exception:
+        time.sleep(10)
+else:
+    raise SystemExit("cannot log in to cassandra-trino as %s or the default superuser" % role)
+
+altered = False
+for ks, repl in s.execute("SELECT keyspace_name, replication FROM system_schema.keyspaces"):
+    cls = repl.get("class", "")
+    if cls.endswith("LocalStrategy") or cls.endswith("EverywhereStrategy") or "trino" in repl:
+        continue
+    new = {k: v for k, v in repl.items() if k != "class"}
+    if cls.endswith("SimpleStrategy"):
+        new = {"warehouse": new.pop("replication_factor", "3")}
+    new["trino"] = "1"
+    s.execute("ALTER KEYSPACE \"%s\" WITH replication = %s" % (ks, {"class": "NetworkTopologyStrategy", **new}))
+    altered = True
+print("REBUILD" if altered else "OK")
+PY
+)" || return 1
+   if [ "${result##*$'\n'}" = "REBUILD" ]; then
+      echo "Streaming existing Cassandra data into the trino DC (nodetool rebuild) ..."
+      kubectl exec cassandra-trino-0 -n "${namespace}" -c cassandra -- nodetool rebuild -- warehouse || return 1
+   fi
+   echo "Cassandra trino DC ready (role $(secret_value cassandra-trino-role username))"
 }
 # Copy lab keytabs from the KDC PVC into Secret kerberos-keytabs for pod mounts.
 function ensureKerberosKeytabSecret(){
@@ -658,8 +829,20 @@ function waitForReady(){
    fi
    if kubectl get statefulset "${service}" -n "${namespace}" >/dev/null 2>&1; then
       kubectl rollout status "statefulset/${service}" -n "${namespace}" --timeout="${rollout_timeout}"
-   else
+   elif kubectl get deployment "${service}" -n "${namespace}" >/dev/null 2>&1; then
       kubectl rollout status "deployment/${service}" -n "${namespace}" --timeout=600s
+   else
+      # Components whose workloads are named differently (trino -> trino-coordinator, trino-worker)
+      local workload=""
+      local workloads=""
+      workloads="$(kubectlNames statefulsets,deployments -n "${namespace}" --selector="app=${service}")" || return 1
+      if [ -z "${workloads}" ]; then
+         echo "No StatefulSet or Deployment for '${service}' in namespace '${namespace}'"
+         return 1
+      fi
+      for workload in ${workloads}; do
+         kubectl rollout status "${workload}" -n "${namespace}" --timeout="${rollout_timeout}" || return 1
+      done
    fi
 }
 # Wait until none of the objects selected by the kubectl get arguments exist.
@@ -708,7 +891,7 @@ function applyOverlayKustomize(){
    fi
    if [[ "${overlay_path}" == */ranger/ ]] || [[ "${overlay_path}" == */ranger ]]; then
       if [ -n "${RANGER_ADMIN_IMAGE:-}" ]; then
-         manifest="$(printf '%s\n' "${manifest}" | sed "s|image: apache/ranger:2.4.0|image: ${RANGER_ADMIN_IMAGE}|g")"
+         manifest="$(printf '%s\n' "${manifest}" | sed "s|image: jpoblete73/ranger:2.4.0|image: ${RANGER_ADMIN_IMAGE}|g")"
       fi
       if [ -n "${HIVECTL_RANGER_EXTERNAL_URL:-}" ]; then
          manifest="$(printf '%s\n' "${manifest}" | sed "s|http://127.0.0.1:6080|${HIVECTL_RANGER_EXTERNAL_URL}|g")"
@@ -763,9 +946,13 @@ function startOverlay(){
    if [ "${target}" = "warehouse_cassandra" ]; then
       ensureWarehouseCassandraKindImage || return 1
    fi
-   if [ "${target}" = "warehouse_cassandra-trino" ] && ! kubectl get secret cassandra-trino-tls cassandra-trino-role -n "${namespace}" >/dev/null 2>&1; then
-      echo "Skipping ${target}: Secrets cassandra-trino-tls and cassandra-trino-role are provisioned out-of-band (see docs/cassandra-trino-two-dc-design.md)"
-      return 0
+   if [ "${namespace}" = "warehouse" ]; then
+      case "${service}" in
+         mysql|postgres|oracle|trino) ensureWarehouseDatabaseSecrets "${namespace}" || return 1 ;;
+      esac
+      case "${service}" in
+         cassandra-trino|trino) ensureCassandraTrinoSecrets "${namespace}" || return 1 ;;
+      esac
    fi
 
    if [ "${target}" = "secure_hadoop-namenode" ] || [ "${target}" = "warehouse_hadoop-namenode" ]; then
@@ -857,6 +1044,12 @@ function startOverlay(){
          ;;
    esac
 
+   if [ "${namespace}" = "warehouse" ]; then
+      case "${service}" in
+         cassandra-trino) ensureCassandraTrinoRole "${namespace}" || return 1 ;;
+         mysql|postgres|oracle) applyWarehouseDatabaseSchema "${namespace}" "${service}" || return 1 ;;
+      esac
+   fi
    if profileHasHue "${namespace}" && [ "${service}" = "hue" ]; then
       ensureHuePortForward "${namespace}" || true
    fi
@@ -2402,15 +2595,15 @@ function startStack(){
          components+=(zookeeper hivemetastore llapdaemon hiveserver2 hue)
          ;;
       warehouse)
-         # Startup order: KDC -> ZooKeeper/Hadoop -> Cassandra -> MySQL -> Ranger -> HMS -> HS2 -> Trino -> Hue
+         # Startup order: KDC -> ZooKeeper/Hadoop -> Cassandra ring + trino DC -> MySQL/Postgres/Oracle -> Ranger -> HMS -> LLAP -> HS2 -> Trino -> Hue
          ensureKrb5Secrets "${namespace}" || return 1
          ensureHueSecrets "${namespace}" || return 1
          ensureAdminSecrets "${namespace}" || return 1
-         components=(krb5kdc zookeeper hadoop-namenode cassandra cassandra-trino mysql)
+         components=(krb5kdc zookeeper hadoop-namenode cassandra cassandra-trino mysql postgres oracle)
          if [ "${HIVECTL_WAREHOUSE_RANGER:-1}" = "1" ]; then
             components+=(ranger)
          fi
-         components+=(hivemetastore hiveserver2 trino hue)
+         components+=(hivemetastore llapdaemon hiveserver2 trino hue)
          ;;
       *)
          components=(hadoop mysql hivemetastore hiveserver2)
@@ -2472,13 +2665,13 @@ function stopStack(){
          components+=(mysql hadoop-namenode krb5kdc)
          ;;
       warehouse)
-         # Reverse of startStack: Hue -> Trino -> HS2 -> HMS -> Ranger -> MySQL -> Cassandra -> Hadoop/ZK -> KDC
-         components=(hue trino hiveserver2 hivemetastore)
+         # Reverse of startStack: Hue -> Trino -> HS2 -> LLAP -> HMS -> Ranger -> Oracle/Postgres/MySQL -> Cassandra -> Hadoop/ZK -> KDC
+         components=(hue trino hiveserver2 llapdaemon hivemetastore)
          overlayActive "warehouse_ranger"
          if [ $? -eq 0 ]; then
             components+=(ranger)
          fi
-         components+=(mysql cassandra-trino cassandra hadoop-namenode zookeeper krb5kdc)
+         components+=(oracle postgres mysql cassandra-trino cassandra hadoop-namenode zookeeper krb5kdc)
          ;;
       *)
          components=(hiveserver2 hivemetastore mysql hadoop)

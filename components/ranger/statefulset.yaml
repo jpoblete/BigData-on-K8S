@@ -23,8 +23,8 @@ spec:
       setHostnameAsFQDN: true
       containers:
         - name: ranger
-          # Docker Hub tag is linux/arm64 only. amd64: docker/ranger-admin (RANGER_ADMIN_IMAGE).
-          image: apache/ranger:2.4.0
+          # Multi-arch: apache/ranger:2.4.0 (arm64) + docker/ranger-admin build (amd64).
+          image: jpoblete73/ranger:2.4.0
           imagePullPolicy: IfNotPresent
           env:
             - name: RANGER_HOME

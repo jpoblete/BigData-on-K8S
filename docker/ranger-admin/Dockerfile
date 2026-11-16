@@ -2,6 +2,8 @@
 # Author: j.martinez.poblete@gmail.com
 # Docker Hub apache/ranger:2.4.0 is a single linux/arm64 manifest. Kind on Apple Silicon
 # runs that tag. amd64 clusters need this image: same Admin tree, amd64 Ubuntu + Java 8.
+# Published as jpoblete73/ranger:2.4.0-amd64, then combined with the upstream arm64 image:
+#   docker buildx imagetools create -t jpoblete73/ranger:2.4.0 apache/ranger:2.4.0 jpoblete73/ranger:2.4.0-amd64
 FROM --platform=linux/arm64 apache/ranger:2.4.0 AS src
 
 FROM --platform=linux/amd64 ubuntu:20.04
