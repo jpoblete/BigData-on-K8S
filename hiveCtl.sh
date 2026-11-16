@@ -2985,6 +2985,57 @@ function hdfsRestoreFromArchive(){
       '
    fi
 }
+# Clusters without Kind/docker: remove the namespace's local-path dirs with a short-lived pod on each node.
+function cleanupLocalPathDirsWithPods(){
+   local namespace="$1"
+   local base=""
+   local node=""
+   local pod=""
+
+   base="$(kubectl get configmap local-path-config -n local-path-storage -o jsonpath='{.data.config\.json}' 2>/dev/null \
+      | python3 -c 'import json, sys
+try:
+    print(json.load(sys.stdin)["nodePathMap"][0]["paths"][0])
+except Exception:
+    print("/opt/local-path-provisioner")')"
+   echo "Removing local-path data for namespace '${namespace}' under ${base} on every node ..."
+   for node in $(kubectl get nodes -o jsonpath='{range .items[*]}{.metadata.name}{" "}{end}'); do
+      pod="local-path-clean-$(printf '%s' "${node}" | cksum | cut -d' ' -f1)"
+      cat <<EOF | kubectl apply -f - >/dev/null || continue
+apiVersion: v1
+kind: Pod
+metadata:
+  name: ${pod}
+  namespace: local-path-storage
+spec:
+  nodeName: ${node}
+  restartPolicy: Never
+  automountServiceAccountToken: false
+  tolerations:
+    - operator: Exists
+  containers:
+    - name: clean
+      image: $(pvcHelperImage)
+      command: ["sh", "-c", "for d in /base/pvc-*_${namespace}_*; do [ -d \"\$d\" ] || continue; echo \"${node}: removed \$d (\$(du -sh \"\$d\" | cut -f1))\"; rm -rf \"\$d\"; done"]
+      securityContext:
+        runAsUser: 0
+      volumeMounts:
+        - name: base
+          mountPath: /base
+  volumes:
+    - name: base
+      hostPath:
+        path: ${base}
+        type: DirectoryOrCreate
+EOF
+   done
+   for node in $(kubectl get nodes -o jsonpath='{range .items[*]}{.metadata.name}{" "}{end}'); do
+      pod="local-path-clean-$(printf '%s' "${node}" | cksum | cut -d' ' -f1)"
+      kubectl wait --for=jsonpath='{.status.phase}'=Succeeded "pod/${pod}" -n local-path-storage --timeout=180s >/dev/null 2>&1
+      kubectl logs "${pod}" -n local-path-storage 2>/dev/null | sed "s|/base/|${base}/|"
+      kubectl delete pod "${pod}" -n local-path-storage --now --ignore-not-found >/dev/null
+   done
+}
 # Delete orphaned local-path-provisioner dirs on Kind nodes (Retain PVs leave data on disk).
 function cleanupLocalPathProvisionerDirs(){
    local namespace="$1"
@@ -2995,7 +3046,7 @@ function cleanupLocalPathProvisionerDirs(){
 
    [ -n "${namespace}" ] || return 0
    if ! command -v docker >/dev/null 2>&1; then
-      echo "docker not available; skipping stale local-path-provisioner cleanup on Kind nodes"
+      cleanupLocalPathDirsWithPods "${namespace}"
       return 0
    fi
    if ! kubectl get nodes >/dev/null 2>&1; then
@@ -3392,6 +3443,23 @@ function backupStack(){
    fi
    return "${status}"
 }
+# StorageClass for a re-created PVC: a StatefulSet volume uses its volumeClaimTemplate's class (none means
+# the cluster default), other PVCs their recorded class. HIVE_STORAGE_CLASS_NAME replaces the repo default.
+function pvcRestoreStorageClass(){
+   python3 -c 'import json, sys
+backup_dir, pvc, recorded, default_sc, override = sys.argv[1:6]
+sc = recorded
+for o in json.load(open(backup_dir + "/manifests.json"))["items"]:
+    if o["kind"] != "StatefulSet":
+        continue
+    for t in o["spec"].get("volumeClaimTemplates", []):
+        prefix = "%s-%s-" % (t["metadata"]["name"], o["metadata"]["name"])
+        if pvc.startswith(prefix) and pvc[len(prefix):].isdigit():
+            sc = t["spec"].get("storageClassName") or "-"
+if sc == default_sc and override:
+    sc = override
+print(sc)' "$1" "$2" "$3" "hive-on-k8s-local-path" "${HIVE_STORAGE_CLASS_NAME:-}"
+}
 # Restore a full-namespace backup: Secrets, PVC contents, then the stack, every overlay and object that was
 # running, and the recorded replica counts. Works on a live namespace, after cleanup, or on a new cluster.
 function restoreFullStack(){
@@ -3421,6 +3489,7 @@ function restoreFullStack(){
          return 1
       fi
       if ! kubectl get pvc "${pvc}" -n "${namespace}" >/dev/null 2>&1; then
+         storage_class="$(pvcRestoreStorageClass "${backup_dir}" "${pvc}" "${storage_class}")"
          cat <<EOF | kubectl apply -f - >/dev/null || return 1
 apiVersion: v1
 kind: PersistentVolumeClaim
@@ -3429,7 +3498,7 @@ metadata:
   namespace: ${namespace}
 spec:
   accessModes: ["${access_mode}"]
-$( [ "${storage_class}" != "-" ] && echo "  storageClassName: ${HIVE_STORAGE_CLASS_NAME:-${storage_class}}" )
+$( [ "${storage_class}" != "-" ] && echo "  storageClassName: ${storage_class}" )
   resources:
     requests:
       storage: ${size}
