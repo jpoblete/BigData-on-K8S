@@ -104,4 +104,4 @@ Resolved since the first run:
 ## Open items
 
 - **Bastion-only branch** `local-backup-20261115-1642` holds the pre-sync local edits (benchmark scripts, earlier Oracle/Postgres/Cassandra work). Review and delete when no longer needed.
-- **Hue UI queries** for Hive and Trino remain unverified (see [warehouse-profile.md](warehouse-profile.md#status)). Hue uses its default first-user Django login; the `admin` password isn't stored in any Secret (`hive-credentials.admin-password` doesn't match).
+- **Hue login isn't in a Secret.** Hue uses its default first-user Django login (`admin`, set by hand); `hive-credentials.admin-password` is unrelated. Hive and Trino queries from the Hue editor were verified after the 2026-11-16 restore (Hive `iceberg_orc_3_1` = 10,400 rows; Trino `mysql.bigdata.sample_customers` = 3 rows).
