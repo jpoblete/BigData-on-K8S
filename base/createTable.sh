@@ -232,10 +232,10 @@ genData() {
    fi
 
    for ((r=1; r<=ROW_PART; r++)); do
-      data=$(genRandomStr 15)
       vals=("${r}")
 
       for ((i=2; i<=TBL_COLS; i++)); do
+         data=$(genRandomStr 15)
          vals+=("'${data}'")
       done
 
