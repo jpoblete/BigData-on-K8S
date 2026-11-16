@@ -5,6 +5,11 @@
 # which no longer matches Cassandra 4.1.12 internals (NoSuchMethodError on role lookup). We compile the
 # upstream 4.1.0 source against cassandra-all:4.1.12 in a build stage and ship only that jar.
 # 5.0.x is not supported by the authenticator, hence 4.1.x.
+# Published multi-arch as jpoblete73/cassandra-kerberos:4.1.12 from per-arch builds:
+#   docker buildx build --platform linux/amd64 --provenance=false -t jpoblete73/cassandra-kerberos:4.1.12-amd64 --push .
+#   docker buildx build --platform linux/arm64 --provenance=false -t jpoblete73/cassandra-kerberos:4.1.12-arm64 --push .
+#   docker buildx imagetools create -t jpoblete73/cassandra-kerberos:4.1.12 \
+#     jpoblete73/cassandra-kerberos:4.1.12-amd64 jpoblete73/cassandra-kerberos:4.1.12-arm64
 
 # ---- Stage 1: compile the authenticator against Cassandra 4.1.12 ----
 FROM maven:3.9-eclipse-temurin-11 AS authenticator-builder

@@ -14,7 +14,7 @@ The `warehouse` profile is a Kerberos-secured data warehouse in the `warehouse` 
 | KDC | MIT Kerberos | `debian:bookworm-slim` (overlay `overlays/warehouse/krb5kdc`, host list `warehouse-hosts.list`) |
 | HDFS | 1 NameNode + 3 DataNodes, `dfs.replication=3` | `apache/hadoop:3.4.1` |
 | ZooKeeper | SASL/Kerberos | overlay `overlays/warehouse/zookeeper` |
-| Cassandra (Kerberos ring) | 3 nodes, Kerberos-only auth | `hive-on-k8s/cassandra-kerberos:4.1.12` (custom, see below) |
+| Cassandra (Kerberos ring) | 3 nodes, Kerberos-only auth | `jpoblete73/cassandra-kerberos:4.1.12` (custom, amd64 + arm64, see below) |
 | Cassandra (`trino` DC) | 1 node (`cassandra-trino`), password auth + mTLS, read by Trino | `jpoblete73/cassandra-kerberos:4.1.12` (overlay `overlays/warehouse/cassandra-trino`) |
 | MySQL | Hive metastore + Ranger DB, plus `bigdata` database for Trino | `mysql:8.4` (overlay `overlays/warehouse/mysql`) |
 | PostgreSQL | `bigdata` database (schema `bigdata`) for Trino | `postgres:16` (component `components/postgres`) |
@@ -30,7 +30,7 @@ Every image the warehouse namespace runs is public or hosted in this repo's Dock
 | Image | Source |
 | --- | --- |
 | `apache/hadoop:3.4.1`, `apache/hive:nightly`, `gethue/hue:latest`, `mysql:8.4`, `postgres:16`, `trinodb/trino:484`, `zookeeper:3.8`, `debian:bookworm-slim` | Public upstream (Docker Hub) |
-| `jpoblete73/cassandra-kerberos:4.1.12` | Docker Hub (this repo's account) |
+| `jpoblete73/cassandra-kerberos:4.1.12` | Docker Hub (this repo's account); multi-arch amd64 + arm64 |
 | `jpoblete73/ranger:2.4.0` | Docker Hub multi-arch tag: upstream `apache/ranger:2.4.0` (arm64, the only platform upstream publishes for 2.4.0) + `jpoblete73/ranger:2.4.0-amd64` built from `docker/ranger-admin` |
 | `jpoblete73/oracle-free:23.9.0.0-amd64` | Docker Hub copy of Oracle's `container-registry.oracle.com/database/free:23.9.0.0-amd64` |
 
