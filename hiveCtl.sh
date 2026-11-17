@@ -452,10 +452,12 @@ for attempt in range(12):
     try:
         try:
             s = connect(role, role_pw)
+            # A role cannot change its own superuser flag. CREATE already set it.
+            s.execute("ALTER ROLE %s WITH LOGIN = true AND PASSWORD = %s", (role, role_pw))
         except Exception:
             s = connect("cassandra", "cassandra")
-        s.execute("CREATE ROLE IF NOT EXISTS %s WITH SUPERUSER = true AND LOGIN = true AND PASSWORD = %s", (role, role_pw))
-        s.execute("ALTER ROLE %s WITH SUPERUSER = true AND LOGIN = true AND PASSWORD = %s", (role, role_pw))
+            s.execute("CREATE ROLE IF NOT EXISTS %s WITH SUPERUSER = true AND LOGIN = true AND PASSWORD = %s", (role, role_pw))
+            s.execute("ALTER ROLE %s WITH LOGIN = true AND PASSWORD = %s", (role, role_pw))
         s.cluster.shutdown()
         break
     except Exception as exc:
