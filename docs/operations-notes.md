@@ -101,6 +101,26 @@ Resolved since the first run:
 | Released `secure` PVs | Deleted with their node directories |
 | Cassandra init failed with `exec format error` on one node | A stale wrong-arch `cassandra-kerberos:4.1.12` was cached there; both Cassandra overlays use `imagePullPolicy: Always` |
 
+## Third test run: fresh `warehouse` start (2026-11-17)
+
+Cleanup with backup (`backups/warehouse-20261117-170931`), then `./hiveCtl.sh start warehouse` on an empty namespace. The backup was not restored. All 16 StatefulSets came up Ready.
+
+| Check | Result |
+|---|---|
+| Trino `mysql` / `postgres` / `oracle` `bigdata.sample_customers` | 3 / 3 / 3 rows |
+| Trino `cassandra` | Connects; system schemas only (no `demo` keyspace on a new volume) |
+| Hive metastore | 3 databases (`default`, `information_schema`, `sys`), 75 tables |
+| Hue | Login page HTTP 200; `hue-admin` password is set in `hive-credentials` |
+
+Problems found and fixed during the run:
+
+| Problem | Fix |
+|---|---|
+| `cassandra-trino` password login failed with `LOCAL_QUORUM` on `system_auth` (no replica in the `trino` DC yet), and the Kerberos ring rejects `CREATE ROLE ... PASSWORD` | Replication is altered over GSSAPI on `cassandra-0`, data is rebuilt onto `cassandra-trino`, then the role is created there |
+| A retry then failed with `not allowed to alter your own superuser status` | `CREATE ROLE` sets superuser; later runs only refresh `LOGIN` and the password |
+| Oracle schema apply ran while `FREEPDB1` did not exist yet, and `sqlplus` still exited 0 | Wait until `FREEPDB1` is `READ WRITE`, and fail the script on SQL errors |
+| Hive SYS schema init never ran: `ensureHiveSysSchema` handles `warehouse`, but `hs2OverlayServiceStarted` did not call it | `warehouse` is included with the other HiveServer2 profiles |
+
 ## Open items
 
 - **Hue login** now comes from `hive-credentials.hue-admin-password` (`./hiveCtl.sh get passwd <profile> hue-admin`); the `hue-migrate` init container creates or updates Django user `admin` to match on every start. A password changed in the Hue UI is reset on the next restart; change it in the Secret and restart Hue instead (see the README, "Hue `admin` password"). Hive and Trino queries from the Hue editor were verified after the 2026-11-16 restore (Hive `iceberg_orc_3_1` = 10,400 rows; Trino `mysql.bigdata.sample_customers` = 3 rows).
