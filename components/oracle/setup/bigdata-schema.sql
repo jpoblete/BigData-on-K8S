@@ -4,6 +4,7 @@
 -- TRINO can only touch objects in the bigdata schema. Run as SYSDBA inside FREEPDB1. Idempotent.
 -- The TRINO password is set by apply-bigdata-schema.sh from the hive-credentials Secret, not here.
 
+WHENEVER SQLERROR EXIT FAILURE
 ALTER SESSION SET CONTAINER = FREEPDB1;
 
 DECLARE
