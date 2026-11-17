@@ -1756,7 +1756,7 @@ function hs2OverlayServiceStarted(){
       standalone)
          [ "${service}" = "hive" ] && return 0
          ;;
-      mini|llap|secure)
+      mini|llap|secure|warehouse)
          [ "${service}" = "hiveserver2" ] && return 0
          ;;
    esac
