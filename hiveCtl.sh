@@ -365,20 +365,20 @@ function ensureCassandraTrinoSecrets(){
          --from-literal=username="trino@${realm}" --from-literal=password="$(generatePassword)" >/dev/null || return 1
    fi
 }
-# Create the Trino superuser role and add the trino DC to every replicated keyspace, then
-# stream existing data into the DC when a keyspace was added. Idempotent.
-# Runs over GSSAPI on cassandra-0. Password login on cassandra-trino reads system_auth at
-# LOCAL_QUORUM, which has no replica in the trino DC until this replication change and rebuild.
+# Add the trino DC to every replicated keyspace, stream existing data, then create the
+# Trino superuser role. Idempotent.
+# Replication is changed over GSSAPI on cassandra-0: that node's role manager rejects
+# PASSWORD. The role itself is created on cassandra-trino, whose PasswordAuthenticator
+# accepts it. Password login reads system_auth at LOCAL_QUORUM, so the rebuild has to
+# finish first or the trino DC has no local replica to read.
 function ensureCassandraTrinoRole(){
    local namespace="$1"
    local result=""
 
    secret_value(){ kubectl get secret "$1" -n "${namespace}" -o jsonpath="{.data.${2//./\\.}}" | base64 -d; }
    # shellcheck disable=SC2016
-   result="$(kubectl exec -i cassandra-0 -n "${namespace}" -c cassandra -- \
-      env ROLE="$(secret_value cassandra-trino-role username)" ROLE_PW="$(secret_value cassandra-trino-role password)" \
-      python3 - <<'PY'
-import os, socket, sys, time
+   result="$(kubectl exec -i cassandra-0 -n "${namespace}" -c cassandra -- python3 - <<'PY'
+import socket, sys, time
 from cassandra import ConsistencyLevel
 from cassandra.auth import AuthProvider, SaslAuthenticator
 from cassandra.cluster import Cluster, ExecutionProfile, EXEC_PROFILE_DEFAULT
@@ -389,7 +389,6 @@ class FqdnGssapiProvider(AuthProvider):
 
 profile = ExecutionProfile(consistency_level=ConsistencyLevel.LOCAL_ONE)
 contact = socket.getfqdn("cassandra-0.cassandra-headless")
-role, role_pw = os.environ["ROLE"], os.environ["ROLE_PW"]
 last = None
 for attempt in range(12):
     try:
@@ -397,8 +396,6 @@ for attempt in range(12):
                           execution_profiles={EXEC_PROFILE_DEFAULT: profile},
                           connect_timeout=30, control_connection_timeout=30)
         s = cluster.connect()
-        s.execute("CREATE ROLE IF NOT EXISTS %s WITH SUPERUSER = true AND LOGIN = true AND PASSWORD = %s", (role, role_pw))
-        s.execute("ALTER ROLE %s WITH SUPERUSER = true AND LOGIN = true AND PASSWORD = %s", (role, role_pw))
         altered = False
         for ks, repl in s.execute("SELECT keyspace_name, replication FROM system_schema.keyspaces"):
             cls = repl.get("class", "")
@@ -417,7 +414,7 @@ for attempt in range(12):
         last = exc
         time.sleep(10)
 else:
-    print("cannot prepare the trino DC via cassandra-0: %s" % last, file=sys.stderr)
+    print("cannot add the trino DC to keyspaces via cassandra-0: %s" % last, file=sys.stderr)
     raise SystemExit(1)
 PY
 )" || return 1
@@ -425,6 +422,49 @@ PY
       echo "Streaming existing Cassandra data into the trino DC (nodetool rebuild) ..."
       kubectl exec cassandra-trino-0 -n "${namespace}" -c cassandra -- nodetool rebuild -- warehouse || return 1
    fi
+   # shellcheck disable=SC2016
+   kubectl exec -i cassandra-trino-0 -n "${namespace}" -c cassandra -- \
+      env CA="$(secret_value trino-cassandra-client-tls ca.crt)" CRT="$(secret_value trino-cassandra-client-tls client.crt)" \
+          KEY="$(secret_value trino-cassandra-client-tls client.key)" \
+          ROLE="$(secret_value cassandra-trino-role username)" ROLE_PW="$(secret_value cassandra-trino-role password)" \
+      python3 - <<'PY' || return 1
+import os, socket, ssl, sys, tempfile, time
+from cassandra.auth import PlainTextAuthProvider
+from cassandra.cluster import Cluster
+
+d = tempfile.mkdtemp()
+for name in ("CA", "CRT", "KEY"):
+    with open(os.path.join(d, name), "w") as fh:
+        fh.write(os.environ[name])
+ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+ctx.check_hostname = False
+ctx.load_verify_locations(os.path.join(d, "CA"))
+ctx.load_cert_chain(os.path.join(d, "CRT"), os.path.join(d, "KEY"))
+host = socket.gethostbyname(socket.gethostname())
+role, role_pw = os.environ["ROLE"], os.environ["ROLE_PW"]
+
+def connect(user, password):
+    return Cluster([host], ssl_context=ctx, auth_provider=PlainTextAuthProvider(user, password),
+                   connect_timeout=30, control_connection_timeout=30).connect()
+
+last = None
+for attempt in range(12):
+    try:
+        try:
+            s = connect(role, role_pw)
+        except Exception:
+            s = connect("cassandra", "cassandra")
+        s.execute("CREATE ROLE IF NOT EXISTS %s WITH SUPERUSER = true AND LOGIN = true AND PASSWORD = %s", (role, role_pw))
+        s.execute("ALTER ROLE %s WITH SUPERUSER = true AND LOGIN = true AND PASSWORD = %s", (role, role_pw))
+        s.cluster.shutdown()
+        break
+    except Exception as exc:
+        last = exc
+        time.sleep(10)
+else:
+    print("cannot create the trino role on cassandra-trino: %s" % last, file=sys.stderr)
+    raise SystemExit(1)
+PY
    echo "Cassandra trino DC ready (role $(secret_value cassandra-trino-role username))"
 }
 # Copy lab keytabs from the KDC PVC into Secret kerberos-keytabs for pod mounts.
