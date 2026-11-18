@@ -30,7 +30,7 @@ spec:
         - name: copy-cassandra-config
           image: jpoblete73/cassandra-kerberos:4.1.12
           imagePullPolicy: Always
-          command: ["sh", "-c", "cp -r /etc/cassandra/. /seed/ && cp /config/* /seed/ && sed -i \"s|\\${TLS_KEYSTORE_PASSWORD}|$(cat /tlssecret/keystore.password)|; s|\\${TLS_TRUSTSTORE_PASSWORD}|$(cat /tlssecret/truststore.password)|\" /seed/cassandra.yaml"]
+          command: ["sh", "-c", "cp -r /etc/cassandra/. /seed/ && cp /config/* /seed/ && sed -i \"s|\\${TLS_KEYSTORE_PASSWORD}|$(cat /tlssecret/keystore.password)|; s|\\${TLS_TRUSTSTORE_PASSWORD}|$(cat /tlssecret/truststore.password)|\" /seed/cassandra.yaml && cp /tools-src/createCassandraTable.sh /tools/createCassandraTable.sh && chmod 755 /tools/createCassandraTable.sh"]
           volumeMounts:
             - name: cassandra-config
               mountPath: /config
@@ -40,6 +40,11 @@ spec:
             - name: cassandra-trino-tls
               mountPath: /tlssecret
               readOnly: true
+            - name: cassandra-tools-src
+              mountPath: /tools-src
+              readOnly: true
+            - name: cassandra-tools
+              mountPath: /tools
       containers:
         - name: cassandra
           image: jpoblete73/cassandra-kerberos:4.1.12
@@ -64,6 +69,16 @@ spec:
               value: 256M
             - name: KRB5_CONFIG
               value: /etc/krb5.conf
+            - name: CASSANDRA_TRINO_USER
+              valueFrom:
+                secretKeyRef:
+                  name: cassandra-trino-role
+                  key: username
+            - name: CASSANDRA_TRINO_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: cassandra-trino-role
+                  key: password
           volumeMounts:
             - name: data
               mountPath: /var/lib/cassandra
@@ -75,6 +90,12 @@ spec:
             - name: kerberos-config
               mountPath: /etc/krb5.conf
               subPath: krb5.conf
+              readOnly: true
+            - name: cassandra-tools
+              mountPath: /usr/local/bin/createCassandraTable.sh
+              subPath: createCassandraTable.sh
+            - name: trino-client-tls
+              mountPath: /etc/cassandra/trino-client
               readOnly: true
           readinessProbe:
             exec:
@@ -99,6 +120,15 @@ spec:
             items:
               - key: krb5.conf
                 path: krb5.conf
+        - name: cassandra-tools-src
+          configMap:
+            name: cassandra-trino-tools
+        - name: cassandra-tools
+          emptyDir: {}
+        - name: trino-client-tls
+          secret:
+            secretName: trino-cassandra-client-tls
+            defaultMode: 288
   volumeClaimTemplates:
     - metadata:
         name: data

@@ -18,5 +18,10 @@ configMapGenerator:
       disableNameSuffixHash: true
     files:
       - krb5.conf=../krb5.conf
+  - name: cassandra-trino-tools
+    options:
+      disableNameSuffixHash: true
+    files:
+      - createCassandraTable.sh=../../../docker/cassandra-kerberos/createCassandraTable.sh
 generatorOptions:
   disableNameSuffixHash: true

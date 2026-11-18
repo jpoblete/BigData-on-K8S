@@ -11,7 +11,8 @@
 # text is not used for c2 or c3: Cassandra orders text by raw UTF-8 bytes, so "10" sorts
 # before "2" and a year string does not sort as a number. int and timeuuid do.
 #
-# Run inside a cassandra pod (uses cql.sh, which uses the entrypoint kinit ticket):
+# Run inside a cassandra pod. The Kerberos ring uses cql.sh (GSSAPI).
+# cassandra-trino uses the local password role and the mounted client certificate.
 #   createCassandraTable.sh keyspace table_name cols_number partitions clusters rows
 #
 #   keyspace    : existing keyspace, or created with replication from KS_RF (default 3)
@@ -249,8 +250,46 @@ if [ "${CREATE_TABLE_VERBOSE:-0}" = "1" ]; then
    cat "${CQL_FILE}"
 fi
 
-# cql.sh -f runs each ';'-separated statement via cql-krb.py.
-if "${CQL_SH}" -f "${CQL_FILE}"; then
+# Kerberos ring: cql.sh. cassandra-trino: password plus the mounted client certificate.
+runCqlFile() {
+   if [ -n "${CASSANDRA_TRINO_PASSWORD:-}" ] && [ -f /etc/cassandra/trino-client/ca.crt ]; then
+      CASSANDRA_CQL_FILE="${CQL_FILE}" python3 - <<'PY'
+import os, ssl
+from cassandra.auth import PlainTextAuthProvider
+from cassandra.cluster import Cluster, ConsistencyLevel, ExecutionProfile, EXEC_PROFILE_DEFAULT
+
+profile = ExecutionProfile(consistency_level=ConsistencyLevel.LOCAL_ONE)
+ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+ctx.check_hostname = False
+ctx.load_verify_locations("/etc/cassandra/trino-client/ca.crt")
+ctx.load_cert_chain("/etc/cassandra/trino-client/client.crt", "/etc/cassandra/trino-client/client.key")
+cluster = Cluster(
+    ["127.0.0.1"],
+    port=9042,
+    ssl_context=ctx,
+    auth_provider=PlainTextAuthProvider(os.environ["CASSANDRA_TRINO_USER"], os.environ["CASSANDRA_TRINO_PASSWORD"]),
+    execution_profiles={EXEC_PROFILE_DEFAULT: profile},
+    connect_timeout=30,
+    control_connection_timeout=30,
+)
+session = cluster.connect()
+text = open(os.environ["CASSANDRA_CQL_FILE"], encoding="utf-8").read().replace("\n", " ")
+try:
+    for stmt in text.split(";"):
+        stmt = stmt.strip()
+        if not stmt:
+            continue
+        print(">> %s" % stmt, flush=True)
+        session.execute(stmt)
+finally:
+    cluster.shutdown()
+PY
+   else
+      "${CQL_SH}" -f "${CQL_FILE}"
+   fi
+}
+
+if runCqlFile; then
    echo "createCassandraTable: OK (${KEYSPACE}.${TBL_NAME}, $((PARTITIONS * CLUSTERS * ROWS)) rows, $((CLUSTERS * ROWS)) per partition)"
    exit 0
 fi
