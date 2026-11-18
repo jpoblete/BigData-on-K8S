@@ -1,0 +1,12 @@
+# Usage Notice: This project is not meant for commercial use without permission and proper credit.
+# Author: j.martinez.poblete@gmail.com
+[connection]
+hostname = 127.0.0.1
+port = 9042
+ssl = true
+
+[ssl]
+certfile = /etc/cassandra/trino-client/ca.crt
+userkey = /etc/cassandra/trino-client/client.key
+usercert = /etc/cassandra/trino-client/client.crt
+validate = true

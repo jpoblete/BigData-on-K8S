@@ -1,0 +1,4 @@
+# Usage Notice: This project is not meant for commercial use without permission and proper credit.
+# Author: j.martinez.poblete@gmail.com
+# cqlsh on the trino DC needs password + mutual TLS; TLS settings come from ~/.cassandra/cqlshrc.
+alias cqlsh='cqlsh -u "$CASSANDRA_TRINO_USER" -p "$CASSANDRA_TRINO_PASSWORD"'

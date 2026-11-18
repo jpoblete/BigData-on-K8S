@@ -97,6 +97,14 @@ spec:
             - name: trino-client-tls
               mountPath: /etc/cassandra/trino-client
               readOnly: true
+            - name: cassandra-tools-src
+              mountPath: /home/cassandra/.cassandra/cqlshrc
+              subPath: cqlshrc
+              readOnly: true
+            - name: cassandra-tools-src
+              mountPath: /home/cassandra/.bashrc
+              subPath: bashrc
+              readOnly: true
           readinessProbe:
             exec:
               command: ["/bin/bash", "-ec", "nodetool status | grep -q '^UN'"]

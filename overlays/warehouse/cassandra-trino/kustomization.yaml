@@ -23,5 +23,7 @@ configMapGenerator:
       disableNameSuffixHash: true
     files:
       - createCassandraTable.sh=../../../docker/cassandra-kerberos/createCassandraTable.sh
+      - cqlshrc=cqlshrc
+      - bashrc=bashrc
 generatorOptions:
   disableNameSuffixHash: true
