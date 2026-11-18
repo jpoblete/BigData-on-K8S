@@ -30,7 +30,9 @@ kinitHiveForBeeline() {
    [ -f "${keytab}" ] || return 0
 
    fqdn="$(hostname -f)"
-   realm="${KRB5_REALM:-SECURE.LAB}"
+   # `su - hive` login shells drop the container env, so fall back to krb5.conf.
+   realm="${KRB5_REALM:-$(awk -F= '/^[[:space:]]*default_realm/ {gsub(/[[:space:]]/, "", $2); print $2; exit}' "${KRB5_CONFIG:-/etc/krb5.conf}" 2>/dev/null)}"
+   realm="${realm:-SECURE.LAB}"
    kinit -kt "${keytab}" "hive/${fqdn}@${realm}"
 }
 
@@ -275,7 +277,7 @@ if [ "${CREATE_TABLE_VERBOSE:-0}" = "1" ]; then
    cat "${HQL_FILE}"
 fi
 
-kinitHiveForBeeline || die "Kerberos kinit failed (stale keytab?). On secure: HIVECTL_KRB5_RESYNC_KEYTABS=1 ./hiveCtl.sh start secure && ./hiveCtl.sh restart secure hiveserver2"
+kinitHiveForBeeline || die "Kerberos kinit failed (wrong realm or stale keytab?). On secure: HIVECTL_KRB5_RESYNC_KEYTABS=1 ./hiveCtl.sh start secure && ./hiveCtl.sh restart secure hiveserver2"
 
 # Hive 4.2 / JLine 3.x tries FfmTerminalProvider on a real TTY (needs --enable-preview). script(1) makes
 # bin/hive treat the client as non-interactive and sets -Djline.terminal=jline.UnsupportedTerminal.
