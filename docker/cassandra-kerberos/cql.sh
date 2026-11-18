@@ -19,7 +19,7 @@ if [ "${1:-}" = "-f" ]; then
   while IFS= read -r stmt; do
     stmt="$(echo "${stmt}" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
     [ -z "${stmt}" ] && continue
-    echo ">> ${stmt}"
+    [ "${CQL_QUIET:-0}" = "1" ] || echo ">> ${stmt}"
     python3 "${CLIENT}" "${stmt}"
   done <<< "${statements}"
 else

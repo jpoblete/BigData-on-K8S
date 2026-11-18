@@ -25,10 +25,22 @@
 #
 # Total rows = partitions * clusters * rows. Rows in one partition = clusters * rows.
 # Example: createCassandraTable.sh demo dummy_10_10_10 10 10 10
+#          createCassandraTable.sh -v demo dummy_10_10_10 10 10 10   # print each statement
 #   10 columns (c4..c10 text), 10 partitions, years 2026..2017, 10 timeuuids per year
 #   1000 rows, 100 in each partition
 
 set -o pipefail
+
+VERBOSE=0
+[ "${CREATE_TABLE_VERBOSE:-0}" = "1" ] && VERBOSE=1
+while [ $# -gt 0 ]; do
+   case "$1" in
+      -v|--verbose) VERBOSE=1; shift ;;
+      --) shift; break ;;
+      -*) echo "ERROR: unknown option: $1" >&2; exit 1 ;;
+      *) break ;;
+   esac
+done
 
 KEYSPACE="${1:-}"
 TBL_NAME="${2:-}"
@@ -45,8 +57,8 @@ CQL_FILE="/tmp/createCassandraTable.${TIMESTAMP}.cql"
 
 # Print command usage and describe each positional argument.
 usage() {
-   echo "createCassandraTable.sh keyspace table_name cols_number partitions clusters rows"
-   echo "Set CREATE_TABLE_VERBOSE=1 to print generated CQL before it runs."
+   echo "createCassandraTable.sh [-v] keyspace table_name cols_number partitions clusters rows"
+   echo "-v           : print each DDL/DML statement (also CREATE_TABLE_VERBOSE=1)"
    echo "keyspace    : keyspace name (created if missing, RF from KS_RF, default 3)"
    echo "table_name  : table name, for example dummy_10_10_10"
    echo "cols_number : number of columns, minimum 3 (default 3)"
@@ -246,14 +258,10 @@ main() {
 validate_args
 main > "${CQL_FILE}" || exit 1
 
-if [ "${CREATE_TABLE_VERBOSE:-0}" = "1" ]; then
-   cat "${CQL_FILE}"
-fi
-
 # Kerberos ring: cql.sh. cassandra-trino: password plus the mounted client certificate.
 runCqlFile() {
    if [ -n "${CASSANDRA_TRINO_PASSWORD:-}" ] && [ -f /etc/cassandra/trino-client/ca.crt ]; then
-      CASSANDRA_CQL_FILE="${CQL_FILE}" python3 - <<'PY'
+      CASSANDRA_CQL_FILE="${CQL_FILE}" CASSANDRA_CQL_VERBOSE="${VERBOSE}" python3 - <<'PY'
 import os, ssl
 from cassandra.auth import PlainTextAuthProvider
 from cassandra.cluster import Cluster, ConsistencyLevel, ExecutionProfile, EXEC_PROFILE_DEFAULT
@@ -279,13 +287,18 @@ try:
         stmt = stmt.strip()
         if not stmt:
             continue
-        print(">> %s" % stmt, flush=True)
+        if os.environ.get("CASSANDRA_CQL_VERBOSE") == "1":
+            print(">> %s" % stmt, flush=True)
         session.execute(stmt)
 finally:
     cluster.shutdown()
 PY
    else
-      "${CQL_SH}" -f "${CQL_FILE}"
+      if [ "${VERBOSE}" = "1" ]; then
+         "${CQL_SH}" -f "${CQL_FILE}"
+      else
+         CQL_QUIET=1 "${CQL_SH}" -f "${CQL_FILE}"
+      fi
    fi
 }
 
