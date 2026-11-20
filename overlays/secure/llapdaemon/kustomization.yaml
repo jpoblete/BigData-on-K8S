@@ -280,7 +280,7 @@ patches:
             protocol: TCP
           - port: 15551
             targetPort: 15551
-            nodePort: 31551
+            nodePort: 31561
             name: shuffle
             protocol: TCP
     target:
