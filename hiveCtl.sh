@@ -4055,7 +4055,7 @@ EOS
       cmd="${HIVE_HOME:-/opt/hive}/bin/beeline -u $(printf "%q" "${BEELINE_URL:?BEELINE_URL is empty}") --silent=true --showHeader=true --outputformat=vertical -f /tmp/hivectl-query-history.sql"
       # kubectl exec has no pty; BeeLine cannot build its JLine terminal without one.
       out="$(timeout 120 script -q -e -c "${cmd}" /dev/null 2>&1 | tr -d "\r" | sed -E "s/\x1b\[[?0-9;]*[a-zA-Z]//g; s/^>[.]*//" \
-         | grep -vE "^(SLF4J|WARNING|Picked up)|^[0-9]{2}/[0-9]{2}/[0-9]{2} [0-9:]+ \[|^SELECT \* FROM sys.query_history|^[[:space:]]*$")"
+         | grep -vE "^(SLF4J|WARNING|Picked up)|^[0-9]{2}/[0-9]{2}/[0-9]{2} [0-9:]+ \[|^SELECT \* FROM sys.query_history|^[[:space:]>.]*$")"
       if printf "%s\n" "${out}" | grep -q "Table not found .query_history"; then
          echo "  (table missing: set hive.query.history.enabled=true in HiveServer2 hive-site.xml and restart HS2)"
       elif [ -z "${out}" ] || printf "%s\n" "${out}" | grep -q "No rows selected"; then
