@@ -3996,7 +3996,15 @@ echo "  --- SQL ---"
 printf '%s\n' "${hits}" | grep -m1 -E 'Compiling command\(queryId=' | sed 's/^.*Compiling command(queryId=[^)]*): */  /'
 echo "  --- lifecycle ---"
 printf '%s\n' "${hits}" | grep -E 'Compiling command|Completed compiling|Executing command|Completed executing|Semantic Analysis Completed|Returning Hive schema|Time taken|query state|Concurrency mode|Starting task|Launching Job|Status: (Running|DAG finished|Failed|Killed)' | cut -c1-400 | sed 's/^/  /'
-apps="$(grep -h -F -A400 -- "${QID}" "${logs[@]}" 2>/dev/null | grep -oE 'application_[0-9]+_[0-9]+|dag_[0-9]+_[0-9]+_[0-9]+' | sort -u)"
+# Lines logged by the execution thread between "Executing command" and its completion.
+exec_lines="$(awk -v q="${QID}" '
+   !on && index($0, "Executing command(queryId=" q ")") {
+      on = 1; t = $0; sub(/^[^[]*\[/, "", t); sub(/\].*$/, "", t); t = "[" t "]"
+   }
+   on && index($0, t) { print }
+   on && index($0, q) && $0 ~ /Completed executing command|FAILED:|Failed to execute/ { exit }
+' "${logs[@]}" 2>/dev/null)"
+apps="$(printf '%s\n' "${exec_lines}" | grep -oE 'application_[0-9]+_[0-9]+|dag_[0-9]+_[0-9]+_[0-9]+' | sort -u)"
 echo "  --- Tez application / DAG ids ---"
 [ -n "${apps}" ] && printf '  %s\n' ${apps} || echo "  (none: fetch task / metadata-only query)"
 for app in $(printf '%s\n' "${apps}" | grep '^application_'); do
@@ -4021,11 +4029,11 @@ EOS
       echo "--- LLAP ${pod} ---"
       kubectl exec -n "${namespace}" "${pod}" -- env QID="${qid}" bash -c '
          shopt -s nullglob; logs=("${HIVE_HOME:-/opt/hive}"/log/llapdaemon*.log*)
-         n="$(grep -h -F -c -- "${QID}" "${logs[@]}" 2>/dev/null | awk "{s+=\$1} END {print s+0}")"
-         echo "  log lines: ${n}"
-         [ "${n}" -gt 0 ] || exit 0
-         grep -h -F -- "${QID}" "${logs[@]}" | grep -oE "attempt_[0-9_]+|fragment[A-Za-z]*=[^ ,]+" | sort -u | head -30 | sed "s/^/  /"
-         grep -h -F -- "${QID}" "${logs[@]}" | grep -E " (WARN|ERROR) |Exception" | cut -c1-400 | head -20 | sed "s/^/  /"' 2>&1
+         hits="$(grep -a -h -F -- "${QID}" "${logs[@]}" 2>/dev/null | tr -d "\000")"
+         [ -n "${hits}" ] || { echo "  log lines: 0"; exit 0; }
+         echo "  log lines: $(printf "%s\n" "${hits}" | wc -l | tr -d " ")"
+         printf "%s\n" "${hits}" | grep -oE "attempt_[0-9]+_[0-9]+_[0-9]+_[0-9]+_[0-9]+_[0-9]+" | sort -u | head -30 | sed "s/^/  fragment: /"
+         printf "%s\n" "${hits}" | cut -c1-300 | head -40 | sed "s/^/  /"' 2>&1
    done
 
    echo ""
@@ -4034,10 +4042,12 @@ EOS
       if [ -f /home/hive/host-service.keytab ]; then
          kinit -kt /home/hive/host-service.keytab "hive/$(hostname -f)@${KRB5_REALM:-SECURE.LAB}" 2>/dev/null
       fi
-      timeout 120 "${HIVE_HOME:-/opt/hive}/bin/beeline" -u "${BEELINE_URL:?BEELINE_URL is empty}" \
-         --silent=true --showHeader=true --outputformat=vertical \
-         -e "SELECT * FROM sys.query_history WHERE query_id = '"'"'${QID}'"'"'" 2>&1 \
-         | grep -vE "^(SLF4J|WARNING|Picked up)" | sed "s/^/  /"' 2>&1 \
+      sql="SELECT * FROM sys.query_history WHERE query_id = '"'"'${QID}'"'"'"
+      printf "%s;\n" "${sql}" > /tmp/hivectl-query-history.sql
+      cmd="${HIVE_HOME:-/opt/hive}/bin/beeline -u $(printf "%q" "${BEELINE_URL:?BEELINE_URL is empty}") --silent=true --showHeader=true --outputformat=vertical -f /tmp/hivectl-query-history.sql"
+      # kubectl exec has no pty; BeeLine cannot build its JLine terminal without one.
+      timeout 120 script -q -e -c "${cmd}" /dev/null 2>&1 | tr -d "\r" \
+         | grep -vE "^(SLF4J|WARNING|Picked up)|^[[:space:]]*$" | sed "s/^/  /"' 2>&1 \
       || echo "  (sys.query_history unavailable: needs Hive 4.1+ with hive.query.history.enabled=true)"
    echo ""
    echo "Older logs are archived on HDFS under \${HIVE_LOG_HDFS_BASE} (see samples/logging/README.md)."
