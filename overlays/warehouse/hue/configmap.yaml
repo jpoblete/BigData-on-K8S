@@ -123,7 +123,7 @@ data:
     http_host=0.0.0.0
     http_port=8888
     use_allowed_hosts=false
-    app_blacklist=search,hbase,oozie,pig,sqoop,zookeeper,security,spark,jobbrowser
+    app_blacklist=search,hbase,oozie,pig,sqoop,zookeeper,security,spark
 
     [[kerberos]]
     hue_keytab=__HUE_KEYTAB__
@@ -173,6 +173,8 @@ data:
     impersonation_enabled=false
     server_conn_timeout=120
     close_queries=true
+    # Job Browser > Queries reads the impalad web UI; via the Service it shows one coordinator's queries.
+    daemon_api_port=25000
 
     [notebook]
     enable_all_interpreters=false

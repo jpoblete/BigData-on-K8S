@@ -129,6 +129,23 @@ Hue has an **Impala** editor (`[impala]` in `overlays/warehouse/hue/configmap.ya
 
 Hue stays at one pod by decision. More Hue pods would spread Impala traffic only loosely (affinity hashes client IPs, it does not round-robin), and the coordinators are not the bottleneck. Scale Hue for its own availability instead (two pods is enough). That needs `hue-1`/`hue-2` Kerberos principals in `warehouse-hosts.list`, the `hue-migrate` init container running on one pod only (it migrates the shared MySQL database and resets `admin` on every start), and `hiveCtl.sh` port-forward and NodePort helpers that don't assume `hue-0`. Sessions and query history are already in MySQL with one `hue-secret-key`, so users can move between pods.
 
+### Query profiles
+
+Each coordinator keeps the profiles of its last 100 queries in memory (`-query_log_size`) and serves them on its web UI (port `25000`); they are lost when the pod restarts. The query ID is in Hue's query output (`Query <id> 100% Complete`). Since the Service may have sent the query to any impalad, ask all three:
+
+```bash
+QID=d9495254cb968ed5:829f8d6b00000000
+for i in 0 1 2; do
+  kubectl -n warehouse exec impalad-$i -- \
+    curl -sf "http://localhost:25000/query_profile_plain_text?query_id=$QID" \
+    > /tmp/profile-$QID-impalad-$i.txt && echo "impalad-$i: found" || rm -f /tmp/profile-$QID-impalad-$i.txt
+done
+```
+
+Other pages take the same `query_id`: `query_summary` (exec summary), `query_plan`, `query_profile_encoded`. To browse, `kubectl -n warehouse port-forward pod/impalad-0 25000:25000` and open `http://localhost:25000/queries`. In `impala-shell`, `profile;` right after a query prints it.
+
+Hue's **Jobs → Queries** tab (Job Browser, `daemon_api_port=25000`) lists queries and profiles too, but it reaches the web UI through Service `impala`, and ClientIP affinity is per Service port, so it shows only the coordinator that port-25000 traffic is pinned to. Use the loop above when a query is missing there. The YARN/Spark tabs of the Job Browser are empty (no YARN in this profile).
+
 On a cluster whose KDC predates Impala, `start warehouse impala` re-applies the KDC host list, creates the missing `impala/*` principals, and refreshes `kerberos-keytabs`.
 
 ## Ports and access
