@@ -138,6 +138,8 @@ data:
       useradd -G supergroup hive
      fi
      echo "hive:${HIVE_PASSWORD}" | chpasswd
+     # Impala (warehouse) reads and writes Hive tables as "impala"; the NameNode resolves groups locally.
+     getent passwd impala >/dev/null || useradd -M -s /usr/sbin/nologin -G supergroup impala
      if getent passwd admin >/dev/null; then
       usermod -aG supergroup admin 2>/dev/null || true
      else

@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<?xml-stylesheet type="text/xsl" href="configuration.xsl"?>
+<!--
+  Usage Notice: This project is not meant for commercial use without permission and proper credit.
+  Author: j.martinez.poblete@gmail.com
+  Impala's copy of the warehouse core-site.xml. Same as trino/hdfs/core-site.xml, with the impala/*
+  principal mapped to the short name "impala" (an HDFS supergroup member on the NameNode).
+-->
+<configuration>
+   <property>
+      <name>fs.defaultFS</name>
+      <value>hdfs://nameservice:8020</value>
+   </property>
+   <property>
+      <name>hadoop.security.authentication</name>
+      <value>kerberos</value>
+   </property>
+   <property>
+      <name>hadoop.security.authorization</name>
+      <value>true</value>
+   </property>
+   <property>
+      <name>hadoop.security.auth_to_local</name>
+      <value>
+RULE:[2:$1/$2@$0](impala/.*@WAREHOUSE\.LAB)s/.*/impala/
+RULE:[2:$1/$2@$0](trino/.*@WAREHOUSE\.LAB)s/.*/trino/
+RULE:[1:$1@$0](.*@WAREHOUSE\.LAB)s/@.*//
+DEFAULT
+      </value>
+   </property>
+   <property>
+      <name>hadoop.proxyuser.hive.hosts</name>
+      <value>*</value>
+   </property>
+   <property>
+      <name>hadoop.proxyuser.hive.groups</name>
+      <value>*</value>
+   </property>
+   <property>
+      <name>hadoop.proxyuser.hue.hosts</name>
+      <value>*</value>
+   </property>
+   <property>
+      <name>hadoop.proxyuser.hue.groups</name>
+      <value>*</value>
+   </property>
+   <property>
+      <name>dfs.client.use.datanode.hostname</name>
+      <value>true</value>
+   </property>
+</configuration>

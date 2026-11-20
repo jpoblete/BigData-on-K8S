@@ -16,3 +16,8 @@ hue-0.hue-headless.warehouse.svc.cluster.local|hue|hue-0
 trino-coordinator-0.trino-headless.warehouse.svc.cluster.local|trino|trino-coordinator-0
 trino-worker-0.trino-headless.warehouse.svc.cluster.local|trino|trino-worker-0
 trino-worker-1.trino-headless.warehouse.svc.cluster.local|trino|trino-worker-1
+impala-statestored-0.impala-headless.warehouse.svc.cluster.local|impala|impala-statestored-0
+impala-catalogd-0.impala-headless.warehouse.svc.cluster.local|impala|impala-catalogd-0
+impalad-0.impala-headless.warehouse.svc.cluster.local|impala|impalad-0
+impalad-1.impala-headless.warehouse.svc.cluster.local|impala|impalad-1
+impalad-2.impala-headless.warehouse.svc.cluster.local|impala|impalad-2

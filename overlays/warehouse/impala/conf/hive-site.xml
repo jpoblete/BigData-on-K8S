@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Usage Notice: This project is not meant for commercial use without permission and proper credit. -->
+<!-- Author: j.martinez.poblete@gmail.com -->
+<!-- Metastore client settings for catalogd (and impalad, which reads the same conf dir). -->
+<?xml-stylesheet type="text/xsl" href="configuration.xsl"?>
+<configuration>
+   <property>
+      <name>hive.metastore.uris</name>
+      <value>thrift://hivemetastore-0.hivemetastore-headless.warehouse.svc.cluster.local:9083,thrift://hivemetastore-1.hivemetastore-headless.warehouse.svc.cluster.local:9083</value>
+   </property>
+   <property>
+      <name>hive.metastore.sasl.enabled</name>
+      <value>true</value>
+   </property>
+   <property>
+      <name>hive.metastore.kerberos.principal</name>
+      <value>hive/_HOST@WAREHOUSE.LAB</value>
+   </property>
+   <property>
+      <name>hive.metastore.warehouse.dir</name>
+      <value>/warehouse/tablespace/managed/hive</value>
+   </property>
+   <property>
+      <name>hive.metastore.warehouse.external.dir</name>
+      <value>/warehouse/tablespace/external/hive</value>
+   </property>
+   <property>
+      <name>hive.metastore.client.socket.timeout</name>
+      <value>3600</value>
+   </property>
+   <!-- catalogd's HMS event polling needs the notification API; HMS has auth on it disabled. -->
+   <property>
+      <name>hive.metastore.event.db.notification.api.auth</name>
+      <value>false</value>
+   </property>
+</configuration>

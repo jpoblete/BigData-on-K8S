@@ -1,0 +1,42 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: impala-headless
+  namespace: warehouse
+spec:
+  clusterIP: None
+  # Daemons must resolve each other before they are Ready (statestore registration happens during startup).
+  publishNotReadyAddresses: true
+  selector:
+    app: impala
+  ports:
+    - name: statestore
+      port: 24000
+    - name: catalog
+      port: 26000
+    - name: krpc
+      port: 27000
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: impala
+  namespace: warehouse
+spec:
+  # Client entry point (impala-shell, Hue, JDBC/HS2 protocol). Any impalad can coordinate.
+  selector:
+    app: impala
+    role: impalad
+  ports:
+    - name: beeswax
+      port: 21000
+      targetPort: 21000
+    - name: hs2
+      port: 21050
+      targetPort: 21050
+    - name: hs2-http
+      port: 28000
+      targetPort: 28000
+    - name: webui
+      port: 25000
+      targetPort: 25000

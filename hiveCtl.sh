@@ -509,6 +509,30 @@ function ensureKerberosKeytabSecret(){
       "${create_args[@]}" \
       --dry-run=client -o yaml | kubectl apply -f - >/dev/null || return 1
 }
+# Impala principals on a KDC that was provisioned before Impala existed: reload the host list,
+# add the missing principals, and refresh the kerberos-keytabs Secret.
+function ensureImpalaKeytabs(){
+   local namespace="$1"
+   local attempt=0
+
+   if [ -n "$(kubectl get secret kerberos-keytabs -n "${namespace}" -o jsonpath='{.data.impalad-0\.keytab}' 2>/dev/null)" ]; then
+      return 0
+   fi
+   echo "Adding Impala principals to the ${namespace} KDC ..."
+   applyOverlayKustomize "./overlays/${namespace}/krb5kdc/" >/dev/null || return 1
+   waitForReady "${namespace}" "krb5kdc" || return 1
+   until kubectl exec -n "${namespace}" krb5kdc-0 -- grep -q '|impalad-0$' /config/secure-lab-hosts.list 2>/dev/null; do
+      attempt=$((attempt + 1))
+      if [ "${attempt}" -ge 60 ]; then
+         echo "krb5kdc-0 did not pick up the Impala hosts in /config/secure-lab-hosts.list"
+         return 1
+      fi
+      sleep 5
+   done
+   kubectl exec -n "${namespace}" krb5kdc-0 -- env KRB5_REALM="$(echo "${namespace}" | tr '[:lower:]' '[:upper:]').LAB" \
+      bash /config/provision-host-keytabs.sh >/dev/null || return 1
+   HIVECTL_KRB5_RESYNC_KEYTABS=1 ensureKerberosKeytabSecret "${namespace}"
+}
 # Add admin-password to an existing secret (clusters created before the admin OS user).
 function ensureAdminSecrets(){
    local namespace="$1"
@@ -1063,6 +1087,10 @@ function startOverlay(){
                      ;;
                   hadoop-namenode|hadoop-datanode|hivemetastore|hiveserver2|llapdaemon|zookeeper|cassandra|hue|trino)
                      ensureKerberosKeytabSecret "${namespace}" || return 1
+                     ;;
+                  impala)
+                     ensureKerberosKeytabSecret "${namespace}" || return 1
+                     ensureImpalaKeytabs "${namespace}" || return 1
                      ;;
                esac
             fi
@@ -2648,7 +2676,7 @@ function startStack(){
          components+=(zookeeper hivemetastore llapdaemon hiveserver2 hue)
          ;;
       warehouse)
-         # Startup order: KDC -> ZooKeeper/Hadoop -> Cassandra ring + trino DC -> MySQL/Postgres/Oracle -> Ranger -> HMS -> LLAP -> HS2 -> Trino -> Hue
+         # Startup order: KDC -> ZooKeeper/Hadoop -> Cassandra ring + trino DC -> MySQL/Postgres/Oracle -> Ranger -> HMS -> LLAP -> HS2 -> Impala -> Trino -> Hue
          ensureKrb5Secrets "${namespace}" || return 1
          ensureHueSecrets "${namespace}" || return 1
          ensureAdminSecrets "${namespace}" || return 1
@@ -2656,7 +2684,7 @@ function startStack(){
          if [ "${HIVECTL_WAREHOUSE_RANGER:-1}" = "1" ]; then
             components+=(ranger)
          fi
-         components+=(hivemetastore llapdaemon hiveserver2 trino hue)
+         components+=(hivemetastore llapdaemon hiveserver2 impala trino hue)
          ;;
       *)
          components=(hadoop mysql hivemetastore hiveserver2)
@@ -2718,8 +2746,8 @@ function stopStack(){
          components+=(mysql hadoop-namenode krb5kdc)
          ;;
       warehouse)
-         # Reverse of startStack: Hue -> Trino -> HS2 -> LLAP -> HMS -> Ranger -> Oracle/Postgres/MySQL -> Cassandra -> Hadoop/ZK -> KDC
-         components=(hue trino hiveserver2 llapdaemon hivemetastore)
+         # Reverse of startStack: Hue -> Trino -> Impala -> HS2 -> LLAP -> HMS -> Ranger -> Oracle/Postgres/MySQL -> Cassandra -> Hadoop/ZK -> KDC
+         components=(hue trino impala hiveserver2 llapdaemon hivemetastore)
          overlayActive "warehouse_ranger"
          if [ $? -eq 0 ]; then
             components+=(ranger)

@@ -38,11 +38,12 @@ Oracle's original registry requires a login and license acceptance, which is why
 | Ranger | Admin (Hive policies) | overlay `overlays/warehouse/ranger` |
 | Hive | Metastore + HiveServer2 (Kerberos), LLAP | `apache/hive:nightly` |
 | Trino | 1 coordinator + 2 workers, Trino 484 | `trinodb/trino:484` |
+| Impala | statestored + catalogd + 3 impalad (one per DataNode node), Impala 4.5.3 | `apache/impala:4.5.3-*` (overlay `overlays/warehouse/impala`, amd64 only) |
 | Hue | Hive + Trino interpreters | `hive-on-k8s/hue-trino` (custom, see below) |
 
 ## Startup and shutdown order
 
-Startup: KDC → ZooKeeper / Hadoop (1 NN + 3 DN) → Cassandra ring → Cassandra `trino` DC → MySQL → PostgreSQL → Oracle → Ranger → Hive Metastore → LLAP → HiveServer2 → Trino → Hue.
+Startup: KDC → ZooKeeper / Hadoop (1 NN + 3 DN) → Cassandra ring → Cassandra `trino` DC → MySQL → PostgreSQL → Oracle → Ranger → Hive Metastore → LLAP → HiveServer2 → Impala → Trino → Hue.
 
 On start, `hiveCtl.sh` also provisions what used to be manual: the Trino database passwords in `hive-credentials`, each database's `bigdata` schema and `trino` user (`components/*/setup/apply-bigdata-schema.sh`, idempotent), and the Cassandra `trino` DC (internal CA, server and Trino client keystores, the `trino@WAREHOUSE.LAB` superuser role, `trino` replication on every keyspace, and `nodetool rebuild` when replication was added). Existing Secrets and data are kept.
 Shutdown is the reverse.
@@ -90,6 +91,28 @@ Trino's Cassandra connector supports only `PASSWORD` auth, so it can't read the 
 
 `hiveCtl.sh start warehouse` starts `cassandra-trino` after the ring and provisions its certificates, role, and replication when they're missing.
 
+## Impala
+
+Impala shares the Hive Metastore with Hive and Trino, so all three engines see the same tables and HDFS files. Trino has no Impala connector; Trino and Impala meet at the metastore, not through each other.
+
+| Pod | Role | Kerberos principal |
+|-----|------|--------------------|
+| `impala-statestored-0` | Cluster membership | `impala/impala-statestored-0.impala-headless.warehouse.svc.cluster.local` |
+| `impala-catalogd-0` | Reads the Hive Metastore (both HMS pods, SASL), polls HMS events, sends metadata to the impalads | `impala/impala-catalogd-0...` |
+| `impalad-0..2` | Coordinator + executor | `impala/impalad-N...` |
+
+Placement: each `impalad` must run on a node that has a `hadoop-datanode` pod, and no two `impalad`s share a node. The DataNodes stay on their nodes because their local-path PVs are node-bound, and in `warehouse` one DataNode per node is now required (it was only preferred). After a restore that moves the volumes, the `impalad`s follow.
+
+Reads are remote. `impalad` and the DataNode have different pod IPs, so Impala does not count any block as local, and short-circuit reads are off (no shared socket). Traffic stays on the node when the scan lands next to the data. Real locality would need host networking on both the DataNodes and `impalad`.
+
+HDFS access is as user `impala`, a `supergroup` member created by the NameNode setup script. Clients connect to Service `impala` (`21050` HS2 protocol, `21000` Beeswax, `25000` web UI) with Kerberos:
+
+```bash
+kubectl -n warehouse exec -it impalad-0 -- impala-shell -k -i impalad-0.impala-headless.warehouse.svc.cluster.local
+```
+
+On a cluster whose KDC predates Impala, `start warehouse impala` re-applies the KDC host list, creates the missing `impala/*` principals, and refreshes `kerberos-keytabs`.
+
 ## Ports and access
 
 | Service | Port | Note |
@@ -120,4 +143,5 @@ Keytab resync for this profile: `./hiveCtl.sh resync-keytabs warehouse` refreshe
 | Hue → Hive query through UI | Not yet verified |
 | Hue → Trino query through UI | Not yet verified |
 | Fresh cluster bring-up from zero | Not yet verified |
+| Impala (catalogd ↔ Hive 4 metastore, queries on HDFS tables) | Not yet verified |
 | Cloudera / EC2 deployment | Not started |
