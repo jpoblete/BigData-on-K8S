@@ -4054,8 +4054,15 @@ EOS
       printf "%s;\n" "${sql}" > /tmp/hivectl-query-history.sql
       cmd="${HIVE_HOME:-/opt/hive}/bin/beeline -u $(printf "%q" "${BEELINE_URL:?BEELINE_URL is empty}") --silent=true --showHeader=true --outputformat=vertical -f /tmp/hivectl-query-history.sql"
       # kubectl exec has no pty; BeeLine cannot build its JLine terminal without one.
-      timeout 120 script -q -e -c "${cmd}" /dev/null 2>&1 | tr -d "\r" \
-         | grep -vE "^(SLF4J|WARNING|Picked up)|^[[:space:]]*$" | sed "s/^/  /"' 2>&1 \
+      out="$(timeout 120 script -q -e -c "${cmd}" /dev/null 2>&1 | tr -d "\r" | sed -E "s/\x1b\[[?0-9;]*[a-zA-Z]//g; s/^>[.]*//" \
+         | grep -vE "^(SLF4J|WARNING|Picked up)|^[0-9]{2}/[0-9]{2}/[0-9]{2} [0-9:]+ \[|^SELECT \* FROM sys.query_history|^[[:space:]]*$")"
+      if printf "%s\n" "${out}" | grep -q "Table not found .query_history"; then
+         echo "  (table missing: set hive.query.history.enabled=true in HiveServer2 hive-site.xml and restart HS2)"
+      elif [ -z "${out}" ] || printf "%s\n" "${out}" | grep -q "No rows selected"; then
+         echo "  (no row yet: records are flushed every hive.query.history.flush.interval.seconds or batch.size queries)"
+      else
+         printf "%s\n" "${out}" | sed "s/^/  /"
+      fi' 2>&1 \
       || echo "  (sys.query_history unavailable: needs Hive 4.1+ with hive.query.history.enabled=true)"
    echo ""
    echo "Older logs are archived on HDFS under \${HIVE_LOG_HDFS_BASE} (see samples/logging/README.md)."

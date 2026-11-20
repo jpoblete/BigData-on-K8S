@@ -210,6 +210,14 @@
          <value>hiveserver2</value>
       </property>
       <property>
+         <name>hive.query.history.enabled</name>
+         <value>true</value>
+      </property>
+      <property>
+         <name>hive.query.history.flush.interval.seconds</name>
+         <value>60</value>
+      </property>
+      <property>
          <name>hive.llap.io.enabled</name>
          <value>true</value>
       </property>
