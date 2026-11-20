@@ -43,6 +43,11 @@
          <name>hive.metastore.event.db.notification.api.auth</name>
          <value>false</value>
       </property>
+      <!-- Impala catalogd's HMS event processor refuses to start without DML (insert) events. -->
+      <property>
+         <name>hive.metastore.dml.events</name>
+         <value>true</value>
+      </property>
       <property>
          <name>hive.llap.daemon.service.principal</name>
          <value>hive/_HOST@SECURE.LAB</value>

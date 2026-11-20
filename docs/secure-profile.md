@@ -16,7 +16,11 @@ For day-to-day commands, see [README.md](../README.md) (profiles, `hiveCtl`, smo
 | Tez session at HS2 startup | `hive.server2.tez.initialize.default.sessions=true` | **`true`** (same as **`llap`**; required for LLAP scheduler metrics + Tez local Kerberos IPC) |
 | Keytabs | N/A | Secret **`kerberos-keytabs`**, synced from KDC PVC via **`hiveCtl`** |
 
-Stack order: **`krb5kdc → hadoop-namenode (+ 3× datanode) → mysql → zookeeper → hivemetastore×2 → llapdaemon×2 → hiveserver2×2 → hue`**.
+Stack order: **`krb5kdc → hadoop-namenode (+ 3× datanode) → mysql → zookeeper → hivemetastore×2 → llapdaemon×2 → hiveserver2×2 → impala → hue`** (stop runs in reverse).
+
+### Impala
+
+`overlays/secure/impala` is the warehouse Impala layout with namespace `secure` and realm `SECURE.LAB`: statestore, CatalogD (patched `-hive4` image), and three `impalad`s, each required on a node with a DataNode (one DataNode per node is required here too, `hadoop-datanode/anti-affinity-required.yaml`). HMS and HS2 set `hive.metastore.dml.events=true` for CatalogD. The Impala host principals are in the `secure-lab-hosts.list` of `components/krb5kdc/configmap.yaml`; `start secure impala` adds them and the shared `impala/impala.secure.svc.cluster.local` principal to a KDC that predates Impala. Hue has the Impala editor and Job Browser (`[impala]` in `overlays/secure/hue/configmap.yaml`). Placement, Hue failover, and query profiles work as described in [warehouse-profile.md](warehouse-profile.md#impala); use `-n secure` in the commands.
 
 ### ACID tables and compaction
 

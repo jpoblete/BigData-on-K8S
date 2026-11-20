@@ -1085,7 +1085,7 @@ function startOverlay(){
                reinitRangerDatabase "${namespace}" || return 1
             fi
          fi
-         if [ "${namespace}" = "warehouse" ] && [ "${service}" = "impala" ]; then
+         if { [ "${namespace}" = "secure" ] || [ "${namespace}" = "warehouse" ]; } && [ "${service}" = "impala" ]; then
             ensureImpalaKeytabs "${namespace}" || return 1
          fi
          waitForReady "${namespace}" "${service}"
@@ -2693,7 +2693,7 @@ function startStack(){
          if [ "${HIVECTL_SECURE_RANGER:-0}" = "1" ]; then
             components+=(ranger)
          fi
-         components+=(zookeeper hivemetastore llapdaemon hiveserver2 hue)
+         components+=(zookeeper hivemetastore llapdaemon hiveserver2 impala hue)
          ;;
       warehouse)
          # Startup order: KDC -> ZooKeeper/Hadoop -> Cassandra ring + trino DC -> MySQL/Postgres/Oracle -> Ranger -> HMS -> LLAP -> HS2 -> Impala -> Trino -> Hue
@@ -2758,7 +2758,7 @@ function stopStack(){
          components=(hue hiveserver2 llapdaemon hivemetastore zookeeper mysql hadoop)
          ;;
       secure)
-         components=(hue hiveserver2 llapdaemon hivemetastore zookeeper)
+         components=(hue impala hiveserver2 llapdaemon hivemetastore zookeeper)
          overlayActive "secure_ranger"
          if [ $? -eq 0 ]; then
             components+=(ranger)

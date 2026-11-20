@@ -48,7 +48,8 @@ The **`warehouse`** profile now has two SQL engines next to Hive. Both use the s
   - The Service uses client-IP affinity, which keeps an HS2 session on one coordinator.
   - If that coordinator goes down, the next query runs on another one.
 - **Startup order:** Impala starts after HiveServer2 and before Trino, and stops in reverse order. `hiveCtl.sh` creates the Impala Kerberos principals, even on a cluster whose KDC predates Impala.
-- **Verified on the live cluster:** `INSERT` and `SELECT` on Parquet, and `SELECT` with `GROUP BY` on Iceberg. Row counts match Trino.
+- **Also in `secure`:** the same Impala layout and Hue editor, with realm `SECURE.LAB` and principal `impala/impala.secure.svc.cluster.local`.
+- **Verified on the live cluster (`warehouse`):** `INSERT` and `SELECT` on Parquet, and `SELECT` with `GROUP BY` on Iceberg. Row counts match Trino.
 
 Details: [warehouse profile, Impala section](docs/warehouse-profile.md#impala) · [operations notes](docs/operations-notes.md).
 
@@ -90,7 +91,9 @@ llap:         apache/hive:nightly (Hive Metastore x2, HiveServer2 x2, LLAP daemo
 secure:       apache/hive:nightly (same LLAP stack as llap: Metastore x2, HiveServer2 x2, LLAP daemon x2)
               apache/hadoop:3.4.1 (HDFS: 1 NameNode + 3 DataNode StatefulSets; Kerberos; dfs.replication=3)
               debian:bookworm-slim (MIT KDC in krb5kdc-0)
-              gethue/hue:latest (Hue → HS2 with SASL/Kerberos backend)
+              gethue/hue:latest (Hue → HS2 and Impala with SASL/Kerberos backend)
+              apache/impala:4.5.3-statestored + jpoblete73/impala:4.5.3-{catalogd,impalad_coord_exec}-hive4
+                (same Impala layout as warehouse)
 warehouse:    apache/hive:nightly, apache/hadoop:3.4.1, debian:bookworm-slim (MIT KDC)
               cassandra:4.1.12 + Kerberos authenticator (hive-on-k8s/cassandra-kerberos:4.1.12, custom)
               cassandra-trino: 1-node `trino` DC (password + mTLS) that Trino reads
@@ -253,10 +256,10 @@ standalone  →  mini  →  llap  →  secure  →  warehouse
 
 | | |
 |--|--|
-| **Adds (on top of `llap`-shaped Hive)** | MIT KDC; **HDFS with three DataNodes** (`hadoop-datanode-0/1/2`, one pod per worker, **`dfs.replication=3`**); **Kerberos SASL ZooKeeper**; **LLAP×2, Hue, 2×** Metastore & HiveServer2 (same scale as **`llap`**, all Kerberos-enabled). **Ranger:** design only — [docs/secure-ranger.md](docs/secure-ranger.md) |
+| **Adds (on top of `llap`-shaped Hive)** | MIT KDC; **HDFS with three DataNodes** (`hadoop-datanode-0/1/2`, one pod per worker, **`dfs.replication=3`**); **Kerberos SASL ZooKeeper**; **LLAP×2, Hue, 2×** Metastore & HiveServer2 (same scale as **`llap`**, all Kerberos-enabled); **Impala** (statestore, CatalogD, 3× `impalad` next to the DataNodes) with a Hue Impala editor, same as **`warehouse`**. **Ranger:** design only — [docs/secure-ranger.md](docs/secure-ranger.md) |
 | **Image** | `apache/hive:nightly` (see [Images by profile](#images-by-profile)) |
 | **Hive tier** | **2** Metastore · **2** HiveServer2 · **2** LLAP daemons (same as **`llap`**, Kerberos-enabled) |
-| **Stack** | `krb5kdc → hadoop-namenode (+ 3× datanode) → mysql → zookeeper → hivemetastore×2 → llapdaemon×2 → hiveserver2×2 → hue` |
+| **Stack** | `krb5kdc → hadoop-namenode (+ 3× datanode) → mysql → zookeeper → hivemetastore×2 → llapdaemon×2 → hiveserver2×2 → impala → hue` |
 | **Prerequisite** | **Three** workers for DataNodes; **two** workers labeled **`node-role.kubernetes.io/llap`** (or [`kind/llap-cluster.yaml`](kind/llap-cluster.yaml) with enough nodes) |
 | **Query path** | Same as **`llap`**: Tez AM in HiveServer2 (**local mode**) → fragments on **`@llap0`**; Beeline via ZK after **`kinit`** (`BEELINE_URL` in HS2 pods) |
 | **Components** | `components/krb5kdc`, `hadoop-namenode`, `hadoop-datanode` · `overlays/secure/*` |
@@ -272,7 +275,7 @@ standalone  →  mini  →  llap  →  secure  →  warehouse
 
 **Hive:** Metastore SASL, **`hive.server2.authentication=KERBEROS`**, **`tez.local.mode=true`**, LLAP execution (**`hive.execution.mode=llap`**). **`hive.server2.tez.initialize.default.sessions=true`** (same as **`llap`**: one Tez session per HS2 JVM for LLAP metrics + Kerberos local AM IPC). Per-pod **`hive.user.install.directory`** and minimal **`.hiveJars`** seed (**`HIVE_TEZ_JAR_SEED=minimal`**). Beeline: **`kinit`** then **`beeline -u "${BEELINE_URL}"`** inside an HS2 pod (ZK discovery + Kerberos).
 
-**Hue:** **`use_sasl=true`** to HS2; File Browser WebHDFS to **`nameservice:9870`** as **`hue/…`**. Literal HS2 principal in `hue-hive-conf/hive-site.xml` (not `hive/_HOST`).
+**Hue:** **`use_sasl=true`** to HS2; File Browser WebHDFS to **`nameservice:9870`** as **`hue/…`**. Literal HS2 principal in `hue-hive-conf/hive-site.xml` (not `hive/_HOST`). Impala editor and **Jobs → Queries** through Service **`impala`**, as in [`warehouse`](docs/warehouse-profile.md#impala).
 
 **More:** [docs/secure-profile.md](docs/secure-profile.md) — ZK FQDN, LLAP ZK SASL, Tez jar troubleshooting, disk recovery, **`createTable.sh`** smoke steps.
 

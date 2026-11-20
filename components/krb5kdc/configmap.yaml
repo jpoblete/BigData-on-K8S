@@ -191,6 +191,11 @@ data:
     llapdaemon-1.llapdaemon.secure.svc.cluster.local|hive|llapdaemon-1
     zookeeper-0.zookeeper.secure.svc.cluster.local|zookeeper|zookeeper-0
     hue-0.hue-headless.secure.svc.cluster.local|hue|hue-0
+    impala-statestored-0.impala-headless.secure.svc.cluster.local|impala|impala-statestored-0
+    impala-catalogd-0.impala-headless.secure.svc.cluster.local|impala|impala-catalogd-0
+    impalad-0.impala-headless.secure.svc.cluster.local|impala|impalad-0
+    impalad-1.impala-headless.secure.svc.cluster.local|impala|impalad-1
+    impalad-2.impala-headless.secure.svc.cluster.local|impala|impalad-2
 
   provision-host-keytabs.sh: |
     #!/bin/bash

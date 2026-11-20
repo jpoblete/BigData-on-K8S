@@ -47,6 +47,11 @@
          <name>hive.metastore.event.db.notification.api.auth</name>
          <value>false</value>
       </property>
+      <!-- Insert events from Hive DML, so Impala catalogd sees new data without REFRESH. -->
+      <property>
+         <name>hive.metastore.dml.events</name>
+         <value>true</value>
+      </property>
       <property>
          <name>hive.server2.authentication</name>
          <value>KERBEROS</value>

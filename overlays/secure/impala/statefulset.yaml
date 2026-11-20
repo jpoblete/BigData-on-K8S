@@ -1,0 +1,310 @@
+# Usage Notice: This project is not meant for commercial use without permission and proper credit.
+# Author: j.martinez.poblete@gmail.com
+# Impala 4.5.3: impala-statestored-0, impala-catalogd-0, impalad-0..2. The image entrypoint already sets
+# -state_store_host=statestored / -catalog_service_host=catalogd; the args below override them with the
+# headless FQDNs, which the Kerberos principals are issued for.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: impala-statestored
+  namespace: secure
+  labels:
+    app: impala
+    role: statestored
+spec:
+  serviceName: impala-headless
+  replicas: 1
+  selector:
+    matchLabels:
+      app: impala
+      role: statestored
+  template:
+    metadata:
+      labels:
+        app: impala
+        role: statestored
+    spec:
+      serviceAccountName: impala
+      automountServiceAccountToken: false
+      securityContext:
+        fsGroup: 1000
+      containers:
+        - name: statestored
+          image: apache/impala:4.5.3-statestored
+          imagePullPolicy: IfNotPresent
+          args:
+            - -hostname=$(POD_FQDN)
+            - -use_resolved_hostname=false
+            - -principal=impala/$(POD_FQDN)@SECURE.LAB
+            - -keytab_file=/etc/impala/keytab/$(POD_NAME).keytab
+            - -logtostderr=true
+            - -redirect_stdout_stderr=false
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: POD_FQDN
+              value: $(POD_NAME).impala-headless.secure.svc.cluster.local
+          ports:
+            - containerPort: 24000
+            - containerPort: 25010
+          readinessProbe:
+            tcpSocket:
+              port: 25010
+            periodSeconds: 10
+          livenessProbe:
+            tcpSocket:
+              port: 25010
+            initialDelaySeconds: 60
+            periodSeconds: 30
+          volumeMounts:
+            - name: impala-conf
+              mountPath: /opt/impala/conf
+              readOnly: true
+            - name: kerberos-config
+              mountPath: /etc/krb5.conf
+              subPath: krb5.conf
+              readOnly: true
+            - name: kerberos-keytabs
+              mountPath: /etc/impala/keytab
+              readOnly: true
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 1Gi
+      volumes:
+        - name: impala-conf
+          configMap:
+            name: impala-conf
+        - name: kerberos-config
+          configMap:
+            name: kerberos-client
+            items:
+              - key: krb5.conf
+                path: krb5.conf
+        - name: kerberos-keytabs
+          secret:
+            secretName: kerberos-keytabs
+            defaultMode: 0440
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: impala-catalogd
+  namespace: secure
+  labels:
+    app: impala
+    role: catalogd
+spec:
+  serviceName: impala-headless
+  replicas: 1
+  selector:
+    matchLabels:
+      app: impala
+      role: catalogd
+  template:
+    metadata:
+      labels:
+        app: impala
+        role: catalogd
+    spec:
+      serviceAccountName: impala
+      automountServiceAccountToken: false
+      securityContext:
+        fsGroup: 1000
+      containers:
+        - name: catalogd
+          image: jpoblete73/impala:4.5.3-catalogd-hive4
+          imagePullPolicy: IfNotPresent
+          args:
+            - -hostname=$(POD_FQDN)
+            - -use_resolved_hostname=false
+            - -principal=impala/$(POD_FQDN)@SECURE.LAB
+            - -keytab_file=/etc/impala/keytab/$(POD_NAME).keytab
+            - -state_store_host=impala-statestored-0.impala-headless.secure.svc.cluster.local
+            - -logtostderr=true
+            - -redirect_stdout_stderr=false
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: POD_FQDN
+              value: $(POD_NAME).impala-headless.secure.svc.cluster.local
+            - name: JAVA_TOOL_OPTIONS
+              value: -Xmx2g
+          ports:
+            - containerPort: 26000
+            - containerPort: 25020
+          readinessProbe:
+            tcpSocket:
+              port: 25020
+            periodSeconds: 10
+          livenessProbe:
+            tcpSocket:
+              port: 25020
+            initialDelaySeconds: 120
+            periodSeconds: 30
+          volumeMounts:
+            - name: impala-conf
+              mountPath: /opt/impala/conf
+              readOnly: true
+            - name: kerberos-config
+              mountPath: /etc/krb5.conf
+              subPath: krb5.conf
+              readOnly: true
+            - name: kerberos-keytabs
+              mountPath: /etc/impala/keytab
+              readOnly: true
+          resources:
+            requests:
+              cpu: 250m
+              memory: 2Gi
+            limits:
+              cpu: "1"
+              memory: 3Gi
+      volumes:
+        - name: impala-conf
+          configMap:
+            name: impala-conf
+        - name: kerberos-config
+          configMap:
+            name: kerberos-client
+            items:
+              - key: krb5.conf
+                path: krb5.conf
+        - name: kerberos-keytabs
+          secret:
+            secretName: kerberos-keytabs
+            defaultMode: 0440
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: impalad
+  namespace: secure
+  labels:
+    app: impala
+    role: impalad
+spec:
+  serviceName: impala-headless
+  replicas: 3
+  podManagementPolicy: Parallel
+  selector:
+    matchLabels:
+      app: impala
+      role: impalad
+  template:
+    metadata:
+      labels:
+        app: impala
+        role: impalad
+    spec:
+      serviceAccountName: impala
+      automountServiceAccountToken: false
+      securityContext:
+        fsGroup: 1000
+      # One impalad per node that runs an HDFS DataNode. The DataNodes are pinned to their nodes by
+      # their local-path PVs, so impalad follows them after a restore or reschedule. Reads still go
+      # over the pod network (different pod IPs), so Impala does not count them as local.
+      affinity:
+        podAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchLabels:
+                  app: hadoop-datanode
+              topologyKey: kubernetes.io/hostname
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchLabels:
+                  app: impala
+                  role: impalad
+              topologyKey: kubernetes.io/hostname
+      tolerations:
+        - key: node-role.kubernetes.io/control-plane
+          operator: Exists
+          effect: NoSchedule
+      containers:
+        - name: impalad
+          image: jpoblete73/impala:4.5.3-impalad_coord_exec-hive4
+          imagePullPolicy: IfNotPresent
+          args:
+            - -hostname=$(POD_FQDN)
+            - -use_resolved_hostname=false
+            # Clients authenticate to the shared Service principal (any coordinator behind Service
+            # impala); daemon-to-daemon traffic keeps the per-pod principal.
+            - -principal=impala/impala.secure.svc.cluster.local@SECURE.LAB
+            - -be_principal=impala/$(POD_FQDN)@SECURE.LAB
+            - -keytab_file=/etc/impala/keytab/$(POD_NAME).keytab
+            - -state_store_host=impala-statestored-0.impala-headless.secure.svc.cluster.local
+            - -catalog_service_host=impala-catalogd-0.impala-headless.secure.svc.cluster.local
+            - -mem_limit=5g
+            - -scratch_dirs=/scratch
+            - -logtostderr=true
+            - -redirect_stdout_stderr=false
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: POD_FQDN
+              value: $(POD_NAME).impala-headless.secure.svc.cluster.local
+            - name: JAVA_TOOL_OPTIONS
+              value: -Xmx1g
+          ports:
+            - containerPort: 21000
+            - containerPort: 21050
+            - containerPort: 25000
+            - containerPort: 27000
+            - containerPort: 28000
+          readinessProbe:
+            tcpSocket:
+              port: 21050
+            periodSeconds: 10
+          livenessProbe:
+            tcpSocket:
+              port: 25000
+            initialDelaySeconds: 120
+            periodSeconds: 30
+          volumeMounts:
+            - name: impala-conf
+              mountPath: /opt/impala/conf
+              readOnly: true
+            - name: kerberos-config
+              mountPath: /etc/krb5.conf
+              subPath: krb5.conf
+              readOnly: true
+            - name: kerberos-keytabs
+              mountPath: /etc/impala/keytab
+              readOnly: true
+            - name: scratch
+              mountPath: /scratch
+          resources:
+            requests:
+              cpu: 500m
+              memory: 4Gi
+            limits:
+              cpu: "2"
+              memory: 6Gi
+      volumes:
+        - name: impala-conf
+          configMap:
+            name: impala-conf
+        - name: kerberos-config
+          configMap:
+            name: kerberos-client
+            items:
+              - key: krb5.conf
+                path: krb5.conf
+        - name: kerberos-keytabs
+          secret:
+            secretName: kerberos-keytabs
+            defaultMode: 0440
+        - name: scratch
+          emptyDir:
+            sizeLimit: 10Gi

@@ -1,0 +1,16 @@
+# One DataNode per node is required in secure: impalad follows the DataNodes one per node.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: hadoop-datanode
+spec:
+  template:
+    spec:
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution: null
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchLabels:
+                  app: hadoop-datanode
+              topologyKey: kubernetes.io/hostname

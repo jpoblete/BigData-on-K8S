@@ -1,0 +1,19 @@
+# Usage Notice: This project is not meant for commercial use without permission and proper credit.
+# Author: j.martinez.poblete@gmail.com
+# Impala 4.5.3 for the secure profile, Kerberos-secured: statestored, catalogd (reads the Hive
+# Metastore), and one impalad per HDFS DataNode node (scheduled next to the DataNodes; reads are remote).
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: secure
+resources:
+  - serviceaccount.yaml
+  - service.yaml
+  - statefulset.yaml
+configMapGenerator:
+  - name: impala-conf
+    files:
+      - core-site.xml=conf/core-site.xml
+      - hdfs-site.xml=conf/hdfs-site.xml
+      - hive-site.xml=conf/hive-site.xml
+generatorOptions:
+  disableNameSuffixHash: true
