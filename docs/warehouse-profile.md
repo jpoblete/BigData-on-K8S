@@ -111,6 +111,8 @@ HDFS access is as user `impala`, a `supergroup` member created by the NameNode s
 kubectl -n warehouse exec -it impalad-0 -- impala-shell -k -i impalad-0.impala-headless.warehouse.svc.cluster.local
 ```
 
+Hue has an **Impala** editor (`[impala]` in `overlays/warehouse/hue/configmap.yaml`): the HS2 protocol on `impalad-0:21050` with Hue's own Kerberos ticket, no impersonation (queries run as `hue`). It targets `impalad-0` directly because Kerberos needs the exact `impala/<host>` principal; if `impalad-0` is down the editor is down even though the other impalads are up.
+
 On a cluster whose KDC predates Impala, `start warehouse impala` re-applies the KDC host list, creates the missing `impala/*` principals, and refreshes `kerberos-keytabs`.
 
 ## Ports and access

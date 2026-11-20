@@ -163,12 +163,24 @@ data:
     list_partitions_limit=10000
     close_queries=open
 
+    # Kerberos needs the exact service principal, so Hue targets impalad-0 rather than Service impala.
+    [impala]
+    server_host=impalad-0.impala-headless.warehouse.svc.cluster.local
+    server_port=21050
+    impala_principal=impala/impalad-0.impala-headless.warehouse.svc.cluster.local@WAREHOUSE.LAB
+    impersonation_enabled=false
+    server_conn_timeout=120
+    close_queries=true
+
     [notebook]
     enable_all_interpreters=false
-    interpreters_shown_on_wheel=hive
+    interpreters_shown_on_wheel=hive,impala
     [[interpreters]]
     [[[hive]]]
     name=Hive
+    interface=hiveserver2
+    [[[impala]]]
+    name=Impala
     interface=hiveserver2
     [[[trino]]]
     name=Trino
