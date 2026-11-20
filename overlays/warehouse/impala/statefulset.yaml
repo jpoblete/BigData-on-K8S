@@ -118,7 +118,7 @@ spec:
         fsGroup: 1000
       containers:
         - name: catalogd
-          image: apache/impala:4.5.3-catalogd
+          image: jpoblete73/impala:4.5.3-catalogd-hive4
           imagePullPolicy: IfNotPresent
           args:
             - -hostname=$(POD_FQDN)
@@ -231,7 +231,7 @@ spec:
           effect: NoSchedule
       containers:
         - name: impalad
-          image: apache/impala:4.5.3-impalad_coord_exec
+          image: jpoblete73/impala:4.5.3-impalad_coord_exec-hive4
           imagePullPolicy: IfNotPresent
           args:
             - -hostname=$(POD_FQDN)

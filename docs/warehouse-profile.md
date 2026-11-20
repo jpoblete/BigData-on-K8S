@@ -38,7 +38,7 @@ Oracle's original registry requires a login and license acceptance, which is why
 | Ranger | Admin (Hive policies) | overlay `overlays/warehouse/ranger` |
 | Hive | Metastore + HiveServer2 (Kerberos), LLAP | `apache/hive:nightly` |
 | Trino | 1 coordinator + 2 workers, Trino 484 | `trinodb/trino:484` |
-| Impala | statestored + catalogd + 3 impalad (one per DataNode node), Impala 4.5.3 | `apache/impala:4.5.3-*` (overlay `overlays/warehouse/impala`, amd64 only) |
+| Impala | statestored + catalogd + 3 impalad (one per DataNode node), Impala 4.5.3 | `apache/impala:4.5.3-statestored`, `jpoblete73/impala:4.5.3-{catalogd,impalad_coord_exec}-hive4` (custom, see below; overlay `overlays/warehouse/impala`, amd64 only) |
 | Hue | Hive + Trino interpreters | `hive-on-k8s/hue-trino` (custom, see below) |
 
 ## Startup and shutdown order
@@ -67,6 +67,17 @@ Cassandra 4.1.12 with the Kerberos SASL authenticator. Built from `authenticator
 - `cql-krb.py`: a GSSAPI CQL client that canonicalises peer IPs to FQDNs so the principal matches the KDC.
 
 The unused upstream jar `cassandra-kerberos-4.1.0-1.0.0.jar` is kept out of the image; it is not referenced by the build.
+
+### `jpoblete73/impala:4.5.3-*-hive4` (`docker/impala-hive4`)
+
+`apache/impala:4.5.3-catalogd` and `-impalad_coord_exec` with one class replaced in `impala-frontend`: `org.apache.impala.compat.MetastoreShim` (**modified** from the 4.5.3 tag). The upstream images are built against Cloudera Hive and reject any table whose metastore `accessType` is unset; Hive 4 leaves it unset unless the client sends processor capabilities, which catalogd's table load does not. The patched class treats unset as `READWRITE`; tables the metastore does mark keep their value. ACID and bucketing checks are unchanged.
+
+```bash
+for role in catalogd impalad_coord_exec; do
+  docker buildx build --platform linux/amd64 --build-arg ROLE=$role \
+    -t jpoblete73/impala:4.5.3-$role-hive4 --push docker/impala-hive4
+done
+```
 
 ### `hive-on-k8s/hue-trino` (`docker/hue-trino`)
 
