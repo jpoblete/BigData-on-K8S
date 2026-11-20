@@ -131,14 +131,15 @@ Hue stays at one pod by decision. More Hue pods would spread Impala traffic only
 
 ### Query profiles
 
-Each coordinator keeps the profiles of its last 100 queries in memory (`-query_log_size`) and serves them on its web UI (port `25000`); they are lost when the pod restarts. The query ID is in Hue's query output (`Query <id> 100% Complete`). Since the Service may have sent the query to any impalad, ask all three:
+Each coordinator keeps the profiles of its last 100 queries in memory (`-query_log_size`) and serves them on its web UI (port `25000`); they are lost when the pod restarts. The query ID is in Hue's query output (`Query <id> 100% Complete`). Since the Service may have sent the query to any impalad, ask all three. The impalad image has no `curl`, so run it from `hue-0`; an impalad that doesn't know the query still answers 200 with a short error, hence the `grep`:
 
 ```bash
 QID=d9495254cb968ed5:829f8d6b00000000
 for i in 0 1 2; do
-  kubectl -n warehouse exec impalad-$i -- \
-    curl -sf "http://localhost:25000/query_profile_plain_text?query_id=$QID" \
-    > /tmp/profile-$QID-impalad-$i.txt && echo "impalad-$i: found" || rm -f /tmp/profile-$QID-impalad-$i.txt
+  kubectl -n warehouse exec hue-0 -c hue -- \
+    curl -s "http://impalad-$i.impala-headless.warehouse.svc.cluster.local:25000/query_profile_plain_text?query_id=$QID" \
+    > /tmp/profile-$QID.txt
+  grep -q "Query (id=$QID)" /tmp/profile-$QID.txt && { echo "impalad-$i coordinated it: /tmp/profile-$QID.txt"; break; }
 done
 ```
 
