@@ -168,6 +168,8 @@ data:
     server_host=impalad-0.impala-headless.warehouse.svc.cluster.local
     server_port=21050
     impala_principal=impala/impalad-0.impala-headless.warehouse.svc.cluster.local@WAREHOUSE.LAB
+    # Hue infers SASL from a local impalad_flags file, which doesn't exist here.
+    use_sasl=true
     impersonation_enabled=false
     server_conn_timeout=120
     close_queries=true
