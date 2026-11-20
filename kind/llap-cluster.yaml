@@ -16,7 +16,7 @@
 # HiveServer2 NodePorts (binary / http / webui → localhost base+0/+1/+2):
 #   standalone 31000-31002 → 11000-11002 · mini 31010-31012 → 11100-11102
 #   llap 31020-31022 → 11200-11202 · secure 31030-31032 → 11300-11302
-# secure only: NameNode UI 30970 → host 9870 · LLAP daemon UI 31502 → host 15002
+# secure only: NameNode UI 30971 → host 9870 · LLAP daemon UI 31512 → host 15002 (warehouse keeps 30970 and 31501-31504)
 #
 # Requires Docker Desktop (or similar) with enough RAM/disk for llap (see README).
 
@@ -74,10 +74,10 @@ nodes:
       - containerPort: 31032
         hostPort: 11302
         protocol: TCP
-      - containerPort: 30970
+      - containerPort: 30971
         hostPort: 9870
         protocol: TCP
-      - containerPort: 31502
+      - containerPort: 31512
         hostPort: 15002
         protocol: TCP
   - role: worker

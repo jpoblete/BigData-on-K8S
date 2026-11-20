@@ -260,22 +260,22 @@ patches:
         value:
           - port: 15001
             targetPort: 15001
-            nodePort: 31501
+            nodePort: 31511
             name: rpc
             protocol: TCP
           - port: 15002
             targetPort: 15002
-            nodePort: 31502
+            nodePort: 31512
             name: web
             protocol: TCP
           - port: 15003
             targetPort: 15003
-            nodePort: 31503
+            nodePort: 31513
             name: output
             protocol: TCP
           - port: 15004
             targetPort: 15004
-            nodePort: 31504
+            nodePort: 31514
             name: management
             protocol: TCP
           - port: 15551

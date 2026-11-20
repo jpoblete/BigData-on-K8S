@@ -320,7 +320,7 @@ Each profile uses a **different localhost port** so two stacks can stay up witho
 | **`secure`** | **localhost:11300** | **11301** | **http://localhost:11302/** | **31030–31032** |
 | **`warehouse`** | **localhost:11400** | **11401** | **http://localhost:11402/** | **31040–31042** |
 
-On **`secure`**, optional **NodePort** browser entry points (same ranges as Hue/HS2 on real clusters, or map them in **`kind/llap-cluster.yaml`**): **HDFS NameNode Web UI** **`http://<node-ip>:30970/`** (Service **`hadoop-namenode-ui`**, container port **9870**; **`nameservice`** stays headless for **`hdfs://nameservice:8020`**), **LLAP daemon UI** **`<node-ip>:31502`** (in-cluster **15002**), **Ranger Admin** **`<node-ip>:30680`** (see **`docs/secure-ranger.md`**).
+On **`secure`**, optional **NodePort** browser entry points (same ranges as Hue/HS2 on real clusters, or map them in **`kind/llap-cluster.yaml`**): **HDFS NameNode Web UI** **`http://<node-ip>:30971/`** (Service **`hadoop-namenode-ui`**, container port **9870**; **`nameservice`** stays headless for **`hdfs://nameservice:8020`**), **LLAP daemon UI** **`<node-ip>:31512`** (in-cluster **15002**; `warehouse` uses 30970 and 31502, so both profiles can run at once), **Ranger Admin** **`<node-ip>:30680`** (see **`docs/secure-ranger.md`**).
 
 | UI | `hiveCtl` |
 |----|-----------|

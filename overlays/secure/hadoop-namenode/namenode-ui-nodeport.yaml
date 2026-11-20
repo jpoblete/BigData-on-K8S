@@ -17,5 +17,5 @@ spec:
     - name: http
       port: 9870
       targetPort: 9870
-      nodePort: 30970
+      nodePort: 30971
       protocol: TCP
