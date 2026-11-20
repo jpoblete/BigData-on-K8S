@@ -44,6 +44,7 @@ function help(){
    echo "        hiveCtl list passwd [<overlay>]    (password aliases; with overlay, keys present in hive-credentials)"
    echo "        hiveCtl get passwd <overlay> <alias>   (print one password from hive-credentials)"
    echo "        hiveCtl get passwd <alias>             (same; overlay defaults to secure, or HIVECTL_PASSWD_OVERLAY)"
+   echo "        hiveCtl query <overlay> <queryId>   (SQL, user, timings, Tez/LLAP ids, errors, sys.query_history)"
    echo "        hiveCtl status   (active components, ready/total pod counts, web UI NodePort when exposed)"
    echo ""
    echo "Hue (standalone|mini|llap|secure|warehouse): port-forward (standalone=8885, mini=8886, llap=8887, secure=8888, warehouse=8889)"
@@ -3956,6 +3957,92 @@ function getPasswd(){
    printf '%s\n' "${value}"
 }
 
+# Print everything known about one Hive query id: HS2 log lines (SQL, user, session, timings,
+# errors), Tez application/DAG ids and their cached exports, LLAP fragments, and sys.query_history.
+function queryDetails(){
+   local namespace="$1"
+   local qid="$2"
+   local pods=() llap_pods=() container_args=() pod remote
+
+   if ! [[ "${qid}" =~ ^[A-Za-z0-9_.-]+$ ]]; then
+      echo "Invalid query id '${qid}' (expected e.g. hive_20261120223332_90da32a4-3da3-40d7-965e-524f74325733)" >&2
+      return 1
+   fi
+   requireNamespace "${namespace}" || return 1
+
+   case "${namespace}" in
+      standalone) pods=(hive-0); container_args=(-c hiveserver2) ;;
+      *) mapfile -t pods < <(kubectl get pods -n "${namespace}" -o name 2>/dev/null | sed -n 's#^pod/\(hiveserver2-[0-9]*\)$#\1#p') ;;
+   esac
+   mapfile -t llap_pods < <(kubectl get pods -n "${namespace}" -o name 2>/dev/null | sed -n 's#^pod/\(llapdaemon-[0-9]*\)$#\1#p')
+   if [ "${#pods[@]}" -eq 0 ]; then
+      echo "No HiveServer2 pods in namespace '${namespace}'" >&2
+      return 1
+   fi
+
+   remote="$(cat <<'EOS'
+log_dir="${HIVE_HOME:-/opt/hive}/log"
+shopt -s nullglob
+logs=("${log_dir}"/hiveserver2*.log*)
+[ "${#logs[@]}" -gt 0 ] || { echo "  (no hiveserver2 logs under ${log_dir})"; exit 0; }
+hits="$(grep -h -F -- "${QID}" "${logs[@]}" 2>/dev/null)"
+[ -n "${hits}" ] || { echo "  (query id not found in ${#logs[@]} log file(s))"; exit 0; }
+echo "  log lines:      $(printf '%s\n' "${hits}" | wc -l | tr -d ' ')"
+echo "  first seen:     $(printf '%s\n' "${hits}" | head -1 | cut -c1-23)"
+echo "  last seen:      $(printf '%s\n' "${hits}" | tail -1 | cut -c1-23)"
+sess="$(printf '%s\n' "${hits}" | grep -oE 'HiveServer2-Handler-Pool[^]]*|sessionId=[0-9a-f-]+|SessionHandle \[[0-9a-f-]+\]' | sort -u | head -5)"
+[ -n "${sess}" ] && printf '  session/thread: %s\n' ${sess}
+echo "  --- SQL ---"
+printf '%s\n' "${hits}" | grep -m1 -E 'Compiling command\(queryId=' | sed 's/^.*Compiling command(queryId=[^)]*): */  /'
+echo "  --- lifecycle ---"
+printf '%s\n' "${hits}" | grep -E 'Compiling command|Completed compiling|Executing command|Completed executing|Semantic Analysis Completed|Returning Hive schema|Time taken|query state|Concurrency mode|Starting task|Launching Job|Status: (Running|DAG finished|Failed|Killed)' | cut -c1-400 | sed 's/^/  /'
+apps="$(grep -h -F -A400 -- "${QID}" "${logs[@]}" 2>/dev/null | grep -oE 'application_[0-9]+_[0-9]+|dag_[0-9]+_[0-9]+_[0-9]+' | sort -u)"
+echo "  --- Tez application / DAG ids ---"
+[ -n "${apps}" ] && printf '  %s\n' ${apps} || echo "  (none: fetch task / metadata-only query)"
+for app in $(printf '%s\n' "${apps}" | grep '^application_'); do
+   f="${log_dir}/tez/${app}.log"
+   [ -f "${f}" ] && echo "  cached Tez export: ${f} ($(wc -l < "${f}" | tr -d ' ') lines)"
+done
+echo "  --- warnings / errors ---"
+err="$(grep -h -F -A15 -- "${QID}" "${logs[@]}" 2>/dev/null | grep -E ' (WARN|ERROR|FATAL) |Exception|FAILED:' | sort -u | head -40)"
+[ -n "${err}" ] && printf '%s\n' "${err}" | cut -c1-400 | sed 's/^/  /' || echo "  (none)"
+EOS
+)"
+
+   echo "=== Query ${qid} in namespace ${namespace} ==="
+   for pod in "${pods[@]}"; do
+      echo ""
+      echo "--- HiveServer2 ${pod} ---"
+      kubectl exec -n "${namespace}" "${pod}" "${container_args[@]}" -- env QID="${qid}" bash -c "${remote}" 2>&1
+   done
+
+   for pod in "${llap_pods[@]}"; do
+      echo ""
+      echo "--- LLAP ${pod} ---"
+      kubectl exec -n "${namespace}" "${pod}" -- env QID="${qid}" bash -c '
+         shopt -s nullglob; logs=("${HIVE_HOME:-/opt/hive}"/log/llapdaemon*.log*)
+         n="$(grep -h -F -c -- "${QID}" "${logs[@]}" 2>/dev/null | awk "{s+=\$1} END {print s+0}")"
+         echo "  log lines: ${n}"
+         [ "${n}" -gt 0 ] || exit 0
+         grep -h -F -- "${QID}" "${logs[@]}" | grep -oE "attempt_[0-9_]+|fragment[A-Za-z]*=[^ ,]+" | sort -u | head -30 | sed "s/^/  /"
+         grep -h -F -- "${QID}" "${logs[@]}" | grep -E " (WARN|ERROR) |Exception" | cut -c1-400 | head -20 | sed "s/^/  /"' 2>&1
+   done
+
+   echo ""
+   echo "--- sys.query_history (${pods[0]}) ---"
+   kubectl exec -n "${namespace}" "${pods[0]}" "${container_args[@]}" -- env QID="${qid}" bash -c '
+      if [ -f /home/hive/host-service.keytab ]; then
+         kinit -kt /home/hive/host-service.keytab "hive/$(hostname -f)@${KRB5_REALM:-SECURE.LAB}" 2>/dev/null
+      fi
+      timeout 120 "${HIVE_HOME:-/opt/hive}/bin/beeline" -u "${BEELINE_URL:?BEELINE_URL is empty}" \
+         --silent=true --showHeader=true --outputformat=vertical \
+         -e "SELECT * FROM sys.query_history WHERE query_id = '"'"'${QID}'"'"'" 2>&1 \
+         | grep -vE "^(SLF4J|WARNING|Picked up)" | sed "s/^/  /"' 2>&1 \
+      || echo "  (sys.query_history unavailable: needs Hive 4.1+ with hive.query.history.enabled=true)"
+   echo ""
+   echo "Older logs are archived on HDFS under \${HIVE_LOG_HDFS_BASE} (see samples/logging/README.md)."
+}
+
 # Dispatch CLI actions to the appropriate helper.
 main(){
    case "${1:-}" in
@@ -4025,6 +4112,10 @@ main(){
         cleanup)
           [[ -z "${2:-}" ]] && help && exit 1
           cleanupStack "$2"
+          ;;
+        query)
+          [[ -z "${2:-}" || -z "${3:-}" ]] && help && exit 1
+          queryDetails "$2" "$3"
           ;;
         list)
           case "${2:-}" in
