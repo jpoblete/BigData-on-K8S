@@ -4004,7 +4004,13 @@ exec_lines="$(awk -v q="${QID}" '
    on && index($0, t) { print }
    on && index($0, q) && $0 ~ /Completed executing command|FAILED:|Failed to execute/ { exit }
 ' "${logs[@]}" 2>/dev/null)"
-apps="$(printf '%s\n' "${exec_lines}" | grep -oE 'application_[0-9]+_[0-9]+|dag_[0-9]+_[0-9]+_[0-9]+' | sort -u)"
+apps="$(printf '%s\n' "${exec_lines}" | grep -oE 'dag_[0-9]+_[0-9]+_[0-9]+' | sort -u)"
+# The execution thread also logs the Tez session it reused or replaced; the DAG names the real one.
+if [ -n "${apps}" ]; then
+   apps="$(printf '%s\n' ${apps} | sed -E 's/^dag_([0-9]+_[0-9]+)_[0-9]+$/application_\1/' | sort -u; printf '%s\n' ${apps})"
+else
+   apps="$(printf '%s\n' "${exec_lines}" | grep -oE 'application_[0-9]+_[0-9]+' | sort -u)"
+fi
 echo "  --- Tez application / DAG ids ---"
 [ -n "${apps}" ] && printf '  %s\n' ${apps} || echo "  (none: fetch task / metadata-only query)"
 for app in $(printf '%s\n' "${apps}" | grep '^application_'); do
@@ -4042,7 +4048,9 @@ EOS
       if [ -f /home/hive/host-service.keytab ]; then
          kinit -kt /home/hive/host-service.keytab "hive/$(hostname -f)@${KRB5_REALM:-SECURE.LAB}" 2>/dev/null
       fi
-      sql="SELECT * FROM sys.query_history WHERE query_id = '"'"'${QID}'"'"'"
+      # Split the id so this lookup does not add matching lines to the HiveServer2 logs.
+      half=$(( ${#QID} / 2 ))
+      sql="SELECT * FROM sys.query_history WHERE query_id = concat('"'"'${QID:0:${half}}'"'"', '"'"'${QID:${half}}'"'"')"
       printf "%s;\n" "${sql}" > /tmp/hivectl-query-history.sql
       cmd="${HIVE_HOME:-/opt/hive}/bin/beeline -u $(printf "%q" "${BEELINE_URL:?BEELINE_URL is empty}") --silent=true --showHeader=true --outputformat=vertical -f /tmp/hivectl-query-history.sql"
       # kubectl exec has no pty; BeeLine cannot build its JLine terminal without one.
