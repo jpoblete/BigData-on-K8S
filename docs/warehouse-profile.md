@@ -3,7 +3,7 @@
 > Usage Notice: This project is not meant for commercial use without permission and proper credit.
 > Author: j.martinez.poblete@gmail.com
 
-The `warehouse` profile is a Kerberos-secured data warehouse in the `warehouse` namespace, realm `WAREHOUSE.LAB`. It builds on the [`secure`](secure-profile.md) Hive stack and adds **Cassandra** and **Trino**, both queryable from **Hue**.
+The `warehouse` profile is a Kerberos-secured data warehouse in the `warehouse` namespace, realm `WAREHOUSE.LAB`. It builds on the [`secure`](secure-profile.md) Hive stack and adds **Cassandra**, **Trino**, and **Impala**, all queryable from **Hue**.
 
 > **Resource warning:** `warehouse` is memory heavy. It requests ~7 CPU and ~31 GiB RAM (limits ~67 GiB) and uses ~20.6 GiB at idle. Run it on a real cluster with 48 GiB+ of Kubernetes memory for meaningful testing; it does not fit a kind / Docker Desktop lab on a laptop. In our tests the `llap` profile runs fine on kind. Full sizing: [README hardware requirements](../README.md#hardware-requirements).
 
@@ -125,7 +125,9 @@ kubectl -n warehouse exec -it impalad-0 -- impala-shell -k -i impalad-0.impala-h
 Hue has an **Impala** editor (`[impala]` in `overlays/warehouse/hue/configmap.yaml`): the HS2 protocol on Service `impala:21050` with Hue's own Kerberos ticket, no impersonation (queries run as `hue`). Any impalad can coordinate:
 
 - Every impalad keytab also holds `impala/impala.warehouse.svc.cluster.local`, exported once with `ktadd -norandkey` so all three share the key. impalad serves clients with it (`-principal`) and keeps `impala/<pod fqdn>` for daemon traffic (`-be_principal`). `start warehouse impala` adds it when missing.
-- Service `impala` uses `sessionAffinity: ClientIP`: an HS2 session and its query handles live on one coordinator, and Hue may reconnect to fetch results. With one Hue pod this gives failover (a coordinator that fails readiness leaves the Service), not load spreading.
+- Service `impala` uses `sessionAffinity: ClientIP`: an HS2 session and its query handles live on one coordinator, and Hue may reconnect to fetch results. With one Hue pod this gives failover (a coordinator that fails readiness leaves the Service), not load spreading. Verified 2026-11-20: deleting the coordinator Hue was pinned to sent the next query to another impalad with no Hue change.
+
+Hue stays at one pod by decision. More Hue pods would spread Impala traffic only loosely (affinity hashes client IPs, it does not round-robin), and the coordinators are not the bottleneck. Scale Hue for its own availability instead (two pods is enough). That needs `hue-1`/`hue-2` Kerberos principals in `warehouse-hosts.list`, the `hue-migrate` init container running on one pod only (it migrates the shared MySQL database and resets `admin` on every start), and `hiveCtl.sh` port-forward and NodePort helpers that don't assume `hue-0`. Sessions and query history are already in MySQL with one `hue-secret-key`, so users can move between pods.
 
 On a cluster whose KDC predates Impala, `start warehouse impala` re-applies the KDC host list, creates the missing `impala/*` principals, and refreshes `kerberos-keytabs`.
 

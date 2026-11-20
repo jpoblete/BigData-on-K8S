@@ -1,6 +1,6 @@
 # BigData on Kubernetes Lab
 
-> `hiveCtl.sh` manages the full lab stack (Hive, HDFS, Ranger, Kerberos, Cassandra, Trino, Hue), not only Hive.
+> `hiveCtl.sh` manages the full lab stack (Hive, HDFS, Ranger, Kerberos, Cassandra, Trino, Impala, Hue), not only Hive.
 
 ## Author
 
@@ -24,6 +24,34 @@ This project runs Apache Hive on Kubernetes using upstream/minimal container ima
 
 The manifests intentionally complete the images at pod startup by installing small OS packages and writing runtime configuration from ConfigMaps. Because those images are minimal, the startup scripts use `root` for bootstrap work and then run Hive/Hadoop services as their application users.
 
+## What's New (November 2026)
+
+The **`warehouse`** profile now has two SQL engines next to Hive. Both use the same Kerberized Hive Metastore and HDFS, so Hive, Trino, and Impala see the same tables. Both have an editor in Hue.
+
+### Trino: one engine for the lake and the databases
+
+- **Trino 484**, one coordinator and two workers, Kerberos to the Hive Metastore (`trino/<host>@WAREHOUSE.LAB`).
+- **Catalogs:**
+  - `hive` and `iceberg` read the HDFS warehouse.
+  - `cassandra` reads a Kerberos-only Cassandra ring through a password + mTLS node in a second datacenter ([design](docs/cassandra-trino-two-dc-design.md)).
+  - `mysql`, `postgres`, and `oracle` read each database's `bigdata` schema ([catalogs](docs/trino-database-catalogs.md)).
+- **Provisioning:** `./hiveCtl.sh start warehouse` creates the passwords, schemas, Trino database users, Cassandra certificates, and Cassandra role, so a new cluster comes up with every catalog working.
+- **Access:** a **Trino editor in Hue** (custom `hue-trino` image), and the Trino UI on NodePort `30080`. Guides: [Iceberg runbook](docs/trino-iceberg-runbook.md), [warehouse profile](docs/warehouse-profile.md).
+
+### Impala: an MPP engine next to the DataNodes
+
+- **Impala 4.5.3**: statestore, CatalogD, and three `impalad`s that coordinate and execute. Each `impalad` runs on a node with an HDFS DataNode, one per node. Placement follows the DataNodes' local-path volumes, so the `impalad`s move with them after a restore. Reads still go over the pod network, so Impala doesn't count them as local.
+- **Shared metastore:** CatalogD reads the Hive 4 Metastore over Kerberos and picks up Hive changes through metastore events (`hive.metastore.dml.events=true`). Tables written by Hive appear in Impala without a manual refresh.
+- **Hive 4 compatibility:** the official Impala images reject Hive 4 tables ("access type is: NONE"). This repo ships `jpoblete73/impala:4.5.3-*-hive4`, the official images with one patched class ([`docker/impala-hive4`](docker/impala-hive4)).
+- **Impala editor in Hue** goes through Service `impala`, so any coordinator can serve it:
+  - The `impalad`s share the Kerberos principal `impala/impala.warehouse.svc.cluster.local`.
+  - The Service uses client-IP affinity, which keeps an HS2 session on one coordinator.
+  - If that coordinator goes down, the next query runs on another one.
+- **Startup order:** Impala starts after HiveServer2 and before Trino, and stops in reverse order. `hiveCtl.sh` creates the Impala Kerberos principals, even on a cluster whose KDC predates Impala.
+- **Verified on the live cluster:** `INSERT` and `SELECT` on Parquet, and `SELECT` with `GROUP BY` on Iceberg. Row counts match Trino.
+
+Details: [warehouse profile, Impala section](docs/warehouse-profile.md#impala) · [operations notes](docs/operations-notes.md).
+
 ## Performance: LLAP, ACID, and a real cluster
 
 End-to-end **benchmarks** on Kubernetes with **Kerberos** (`secure` profile):
@@ -38,12 +66,13 @@ Full methodology, SQL, and tables: **[docs/benchmark-llap-acid-2026-11.md](docs/
 
 Read **Profiles** in order (simplest first). UIs and kind setup are grouped under **[Browser UIs & kind](#browser-uis-and-kind-standalone--mini--llap--secure--warehouse)**.
 
+- [**What's New (Nov 2026)**](#whats-new-november-2026) — Trino and Impala in `warehouse`
 - [**LLAP & ACID benchmark (Nov 2026)**](docs/benchmark-llap-acid-2026-11.md) — **real-cluster** timings: analytical + transactional workloads
 - [Images by profile](#images-by-profile)
 - [Prerequisites](#prerequisites) · [Hardware](#hardware-requirements)
 - [**Profiles**](#profiles) — `standalone` → `mini` → `llap` → `secure` → `warehouse`
 - [**Secure profile (detailed)**](docs/secure-profile.md) — Kerberos ZK, Tez jar cache, disk, smoke tests
-- [**Warehouse profile**](docs/warehouse-profile.md) — secure stack + Cassandra + Trino + custom Hue
+- [**Warehouse profile**](docs/warehouse-profile.md) — secure stack + Cassandra + Trino + Impala + custom Hue
 - [Browser UIs & kind (all Hue profiles)](#browser-uis-and-kind-standalone--mini--llap--secure--warehouse)
 - [Data safety](#data-safety) · [Bootstrap model](#bootstrap-model) · [Lab OS users](#lab-os-users-supergroup)
 - [Smoke tests](#smoke-tests) · [Validation](#validation)
@@ -65,8 +94,10 @@ secure:       apache/hive:nightly (same LLAP stack as llap: Metastore x2, HiveSe
 warehouse:    apache/hive:nightly, apache/hadoop:3.4.1, debian:bookworm-slim (MIT KDC)
               cassandra:4.1.12 + Kerberos authenticator (hive-on-k8s/cassandra-kerberos:4.1.12, custom)
               cassandra-trino: 1-node `trino` DC (password + mTLS) that Trino reads
-              trinodb/trino:484 (Hive + Cassandra catalogs)
-              hive-on-k8s/hue-trino (custom: gethue/hue + SQLAlchemy 1.4 + sqlalchemy-trino)
+              trinodb/trino:484 (hive, iceberg, cassandra, mysql, postgres, oracle catalogs)
+              apache/impala:4.5.3-statestored + jpoblete73/impala:4.5.3-{catalogd,impalad_coord_exec}-hive4
+                (custom: one patched class for the Hive 4 metastore; 3 impalad next to the DataNodes)
+              hive-on-k8s/hue-trino (custom: gethue/hue + SQLAlchemy 1.4 + sqlalchemy-trino; Hive, Trino, Impala editors)
 ```
 
 `mini` and `standalone` pin the released **4.2.0** image. **`llap` and `secure` use the moving `nightly` tag** (Beeline reports **4.3.0-SNAPSHOT** today) so Tez and LLAP pick up fixes not in 4.2.0—notably [HIVE-29566](https://issues.apache.org/jira/browse/HIVE-29566), where reopening a Tez session in the same HiveServer2 JVM could fail with `JvmMetrics already exists` on grouped/aggregating queries. After an image bump, metastore pods run `schematool` on startup if the schema version changed. Leave headroom on kind or Docker Desktop nodes when pulling `nightly` (~1.5 GiB per node that schedules a Hive pod). To pin `llap` / `secure` to a release tag again, change the image patch in each profile’s `hivemetastore`, `hiveserver2`, and `llapdaemon` kustomizations.
@@ -135,7 +166,8 @@ secure only:
 
 warehouse only (measured on the live cluster, Nov 2026; use a real cluster):
   pod requests:    ~7 CPU, ~31 GiB RAM (Trino and cassandra-trino set none, so real need is higher)
-  pod limits:      ~28 CPU, ~67 GiB RAM
+                   + Impala ~2 CPU, ~14 GiB (3 impalad x 4 GiB, catalogd 2 GiB, statestored 256 MiB)
+  pod limits:      ~28 CPU, ~67 GiB RAM (+ Impala ~8 CPU, ~22 GiB)
   idle usage:      ~0.5 CPU, ~20.6 GiB RAM, before any query
   Kubernetes RAM:  48 GiB+ for meaningful testing (64 GiB+ comfortable)
   CPUs:            12+
@@ -145,7 +177,7 @@ warehouse only (measured on the live cluster, Nov 2026; use a real cluster):
 
 > **`warehouse` is memory heavy. Use a real multi-node cluster for any meaningful testing, not kind.** On a 36 GB Apple M3 Pro, Docker Desktop gets ~23.4 GiB, and every kind node reports that same amount. The scheduler then sees ~140 GiB, places all pods, and they hit OOM kills. The idle stack alone (~20.6 GiB) nearly fills the VM. Several images are amd64-only (`apache/hadoop:3.4.1`, `gethue/hue:latest`, `jpoblete73/oracle-free:23.9.0.0-amd64`), so on Apple Silicon they run under emulation and are much slower. In our tests the **`llap`** profile runs fine on kind; it is the largest profile we recommend locally.
 
-**`secure`** is **`llap` + Kerberos** (same ZooKeeper, **2×** Metastore / HiveServer2 / LLAP daemon, and Hue; HDFS **1 NN + 3 DN**; realm **`SECURE.LAB`**). **`warehouse`** is the `secure` stack plus Cassandra and Trino (realm **`WAREHOUSE.LAB`**). Only one of **`llap`**, **`secure`**, or **`warehouse`** should be up on a lab sized for the rows above.
+**`secure`** is **`llap` + Kerberos** (same ZooKeeper, **2×** Metastore / HiveServer2 / LLAP daemon, and Hue; HDFS **1 NN + 3 DN**; realm **`SECURE.LAB`**). **`warehouse`** is the `secure` stack plus Cassandra, Trino, and Impala (realm **`WAREHOUSE.LAB`**). Only one of **`llap`**, **`secure`**, or **`warehouse`** should be up on a lab sized for the rows above.
 
 With kind on Docker Desktop, every node is a container in the **same** VM: **`df` on each node reflects one shared virtual disk**, not six independent disks. Adding workers spreads pods; it does not add RAM or disk. Give Docker Desktop **enough memory** for the profile and **≥100 GiB disk** if you run **`llap`** or **`secure`** with **`apache/hive:nightly`**. Before large starts: `./hiveCtl.sh disk` (auto-prunes unused images when **`/var`** is above **90%**).
 
@@ -250,16 +282,16 @@ standalone  →  mini  →  llap  →  secure  →  warehouse
 
 | | |
 |--|--|
-| **Purpose** | Kerberos-secured warehouse: Hive on the `secure` stack plus **Cassandra** and **Trino** queryable from **Hue** |
+| **Purpose** | Kerberos-secured warehouse: Hive on the `secure` stack plus **Cassandra**, **Trino**, and **Impala**, all queryable from **Hue** |
 | **Realm / namespace** | `WAREHOUSE.LAB` · namespace `warehouse` |
-| **Adds (on top of `secure`)** | Kerberos Cassandra 4.1.12 (custom authenticator); a password-auth Cassandra node for Trino; Trino 484 with `hive` and `cassandra` catalogs; Hue on a custom image with SQLAlchemy 1.4 + `sqlalchemy-trino` |
-| **Stack** | `krb5kdc → hadoop-namenode (+3 datanode) → zookeeper → cassandra (kerberos) → mysql → ranger → hivemetastore → hiveserver2 → trino → hue` |
-| **Components** | `overlays/warehouse/*` · `docker/cassandra-kerberos`, `docker/hue-trino` |
+| **Adds (on top of `secure`)** | Kerberos Cassandra 4.1.12 (custom authenticator); a password-auth Cassandra node for Trino; PostgreSQL and Oracle; Trino 484 with `hive`, `iceberg`, `cassandra`, `mysql`, `postgres`, `oracle` catalogs; Impala 4.5.3 (statestored, catalogd, 3 impalad next to the DataNodes); Hue on a custom image with SQLAlchemy 1.4 + `sqlalchemy-trino` |
+| **Stack** | `krb5kdc → zookeeper → hadoop-namenode (+3 datanode) → cassandra (kerberos) → cassandra-trino → mysql → postgres → oracle → ranger → hivemetastore → llapdaemon → hiveserver2 → impala → trino → hue` |
+| **Components** | `overlays/warehouse/*` · `docker/cassandra-kerberos`, `docker/hue-trino`, `docker/impala-hive4` |
 | **Start / stop** | `./hiveCtl.sh start warehouse` · `./hiveCtl.sh stop warehouse` (reverse order) |
 | **UIs** | Hue **http://localhost:8889** ([Browser UIs](#browser-uis-and-kind-standalone--mini--llap--secure--warehouse)) |
-| **Try it** | Hue → Trino interpreter (`hive` and `cassandra` catalogs) and Hue → Hive (`hiveserver2`) |
+| **Try it** | Hue → Hive (`hiveserver2`), Hue → Trino (all catalogs), Hue → Impala (Service `impala`, any coordinator) |
 
-Full details, custom-image build steps, and the Cassandra password-node design: [docs/warehouse-profile.md](docs/warehouse-profile.md).
+Full details, custom-image build steps, the Cassandra password-node design, and Impala placement and Kerberos: [docs/warehouse-profile.md](docs/warehouse-profile.md).
 
 ## Browser UIs and kind (`standalone` / `mini` / `llap` / `secure` / `warehouse`)
 
