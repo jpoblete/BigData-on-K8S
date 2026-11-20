@@ -47,14 +47,7 @@
       <property>
          <name>hive.metastore.dml.events</name>
          <value>true</value>
-      </property>
-      <!-- Off: the default transformer gives Impala access type NONE on every table (no processor
-           capabilities from the Apache Impala build). Trino ignores accessType; HS2 sends full capabilities. -->
-      <property>
-         <name>metastore.metadata.transformer.class</name>
-         <value> </value>
-      </property>
-      <property>
+      </property>      <property>
          <name>hive.llap.daemon.service.principal</name>
          <value>hive/_HOST@WAREHOUSE.LAB</value>
       </property>

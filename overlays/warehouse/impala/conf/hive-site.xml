@@ -28,6 +28,12 @@
       <name>hive.metastore.client.socket.timeout</name>
       <value>3600</value>
    </property>
+   <!-- catalogd doesn't register processor capabilities, so Hive 4 skips its metadata transformer and
+        leaves accessType unset, which Impala treats as NONE. Same list Impala sends in direct-HMS mode. -->
+   <property>
+      <name>hive.metastore.client.capabilities</name>
+      <value>EXTWRITE,EXTREAD,HIVEMANAGEDINSERTREAD,HIVEMANAGEDINSERTWRITE,HIVEFULLACIDREAD,HIVEFULLACIDWRITE,HIVESQL,HIVEMQT,HIVEBUCKET2</value>
+   </property>
    <!-- catalogd's HMS event polling needs the notification API; HMS has auth on it disabled. -->
    <property>
       <name>hive.metastore.event.db.notification.api.auth</name>
