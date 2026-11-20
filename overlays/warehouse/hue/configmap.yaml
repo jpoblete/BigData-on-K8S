@@ -123,7 +123,7 @@ data:
     http_host=0.0.0.0
     http_port=8888
     use_allowed_hosts=false
-    app_blacklist=search,hbase,oozie,pig,sqoop,zookeeper,security,spark,jobbrowser,impala
+    app_blacklist=search,hbase,oozie,pig,sqoop,zookeeper,security,spark,jobbrowser
 
     [[kerberos]]
     hue_keytab=__HUE_KEYTAB__
