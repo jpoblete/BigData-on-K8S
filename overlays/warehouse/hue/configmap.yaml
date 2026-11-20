@@ -163,11 +163,11 @@ data:
     list_partitions_limit=10000
     close_queries=open
 
-    # Kerberos needs the exact service principal, so Hue targets impalad-0 rather than Service impala.
+    # Service impala balances across the impalads (ClientIP affinity); they share this principal.
     [impala]
-    server_host=impalad-0.impala-headless.warehouse.svc.cluster.local
+    server_host=impala.warehouse.svc.cluster.local
     server_port=21050
-    impala_principal=impala/impalad-0.impala-headless.warehouse.svc.cluster.local@WAREHOUSE.LAB
+    impala_principal=impala/impala.warehouse.svc.cluster.local@WAREHOUSE.LAB
     # Hue infers SASL from a local impalad_flags file, which doesn't exist here.
     use_sasl=true
     impersonation_enabled=false

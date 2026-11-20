@@ -509,28 +509,45 @@ function ensureKerberosKeytabSecret(){
       "${create_args[@]}" \
       --dry-run=client -o yaml | kubectl apply -f - >/dev/null || return 1
 }
-# Impala principals on a KDC that was provisioned before Impala existed: reload the host list,
-# add the missing principals, and refresh the kerberos-keytabs Secret.
+# Impala principals: per-pod impala/<pod fqdn> from the host list (added to a KDC provisioned
+# before Impala existed), plus the shared client-facing impala/impala.<ns>.svc.cluster.local in
+# every impalad keytab so clients can reach any coordinator through Service impala. The shared
+# key is exported with -norandkey; a plain ktadd would re-key it and invalidate the other keytabs.
 function ensureImpalaKeytabs(){
    local namespace="$1"
    local attempt=0
+   local realm=""
+   local svc_principal=""
+   local keytab_dir="/var/lib/krb5kdc/keytabs"
+   local i=""
 
-   if [ -n "$(kubectl get secret kerberos-keytabs -n "${namespace}" -o jsonpath='{.data.impalad-0\.keytab}' 2>/dev/null)" ]; then
+   realm="$(echo "${namespace}" | tr '[:lower:]' '[:upper:]').LAB"
+   svc_principal="impala/impala.${namespace}.svc.cluster.local@${realm}"
+   waitForReady "${namespace}" "krb5kdc" || return 1
+   if kubectl exec -n "${namespace}" krb5kdc-0 -- sh -c "for i in 0 1 2; do klist -kt ${keytab_dir}/impalad-\$i.keytab 2>/dev/null | grep -q '${svc_principal}' || exit 1; done" \
+      && [ -n "$(kubectl get secret kerberos-keytabs -n "${namespace}" -o jsonpath='{.data.impalad-0\.keytab}' 2>/dev/null)" ]; then
       return 0
    fi
-   echo "Adding Impala principals to the ${namespace} KDC ..."
-   applyOverlayKustomize "./overlays/${namespace}/krb5kdc/" >/dev/null || return 1
-   waitForReady "${namespace}" "krb5kdc" || return 1
-   until kubectl exec -n "${namespace}" krb5kdc-0 -- grep -q '|impalad-0$' /config/secure-lab-hosts.list 2>/dev/null; do
-      attempt=$((attempt + 1))
-      if [ "${attempt}" -ge 60 ]; then
-         echo "krb5kdc-0 did not pick up the Impala hosts in /config/secure-lab-hosts.list"
-         return 1
-      fi
-      sleep 5
+   if ! kubectl exec -n "${namespace}" krb5kdc-0 -- test -f "${keytab_dir}/impalad-0.keytab" 2>/dev/null; then
+      echo "Adding Impala principals to the ${namespace} KDC ..."
+      applyOverlayKustomize "./overlays/${namespace}/krb5kdc/" >/dev/null || return 1
+      waitForReady "${namespace}" "krb5kdc" || return 1
+      until kubectl exec -n "${namespace}" krb5kdc-0 -- grep -q '|impalad-0$' /config/secure-lab-hosts.list 2>/dev/null; do
+         attempt=$((attempt + 1))
+         if [ "${attempt}" -ge 60 ]; then
+            echo "krb5kdc-0 did not pick up the Impala hosts in /config/secure-lab-hosts.list"
+            return 1
+         fi
+         sleep 5
+      done
+      kubectl exec -n "${namespace}" krb5kdc-0 -- env KRB5_REALM="${realm}" \
+         bash /config/provision-host-keytabs.sh >/dev/null || return 1
+   fi
+   echo "Adding ${svc_principal} to the impalad keytabs ..."
+   kubectl exec -n "${namespace}" krb5kdc-0 -- kadmin.local -q "addprinc -randkey ${svc_principal}" >/dev/null 2>&1 || true
+   for i in 0 1 2; do
+      kubectl exec -n "${namespace}" krb5kdc-0 -- kadmin.local -q "ktadd -norandkey -k ${keytab_dir}/impalad-${i}.keytab ${svc_principal}" >/dev/null || return 1
    done
-   kubectl exec -n "${namespace}" krb5kdc-0 -- env KRB5_REALM="$(echo "${namespace}" | tr '[:lower:]' '[:upper:]').LAB" \
-      bash /config/provision-host-keytabs.sh >/dev/null || return 1
    HIVECTL_KRB5_RESYNC_KEYTABS=1 ensureKerberosKeytabSecret "${namespace}"
 }
 # Add admin-password to an existing secret (clusters created before the admin OS user).
@@ -1067,6 +1084,9 @@ function startOverlay(){
             if [ "${HIVECTL_RANGER_REINIT:-0}" = "1" ]; then
                reinitRangerDatabase "${namespace}" || return 1
             fi
+         fi
+         if [ "${namespace}" = "warehouse" ] && [ "${service}" = "impala" ]; then
+            ensureImpalaKeytabs "${namespace}" || return 1
          fi
          waitForReady "${namespace}" "${service}"
          if [ "${namespace}" = "secure" ] && [ "${service}" = "krb5kdc" ]; then

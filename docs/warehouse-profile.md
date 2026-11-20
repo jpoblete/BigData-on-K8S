@@ -122,7 +122,10 @@ HDFS access is as user `impala`, a `supergroup` member created by the NameNode s
 kubectl -n warehouse exec -it impalad-0 -- impala-shell -k -i impalad-0.impala-headless.warehouse.svc.cluster.local
 ```
 
-Hue has an **Impala** editor (`[impala]` in `overlays/warehouse/hue/configmap.yaml`): the HS2 protocol on `impalad-0:21050` with Hue's own Kerberos ticket, no impersonation (queries run as `hue`). It targets `impalad-0` directly because Kerberos needs the exact `impala/<host>` principal; if `impalad-0` is down the editor is down even though the other impalads are up.
+Hue has an **Impala** editor (`[impala]` in `overlays/warehouse/hue/configmap.yaml`): the HS2 protocol on Service `impala:21050` with Hue's own Kerberos ticket, no impersonation (queries run as `hue`). Any impalad can coordinate:
+
+- Every impalad keytab also holds `impala/impala.warehouse.svc.cluster.local`, exported once with `ktadd -norandkey` so all three share the key. impalad serves clients with it (`-principal`) and keeps `impala/<pod fqdn>` for daemon traffic (`-be_principal`). `start warehouse impala` adds it when missing.
+- Service `impala` uses `sessionAffinity: ClientIP`: an HS2 session and its query handles live on one coordinator, and Hue may reconnect to fetch results. With one Hue pod this gives failover (a coordinator that fails readiness leaves the Service), not load spreading.
 
 On a cluster whose KDC predates Impala, `start warehouse impala` re-applies the KDC host list, creates the missing `impala/*` principals, and refreshes `kerberos-keytabs`.
 

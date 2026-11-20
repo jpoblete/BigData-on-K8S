@@ -24,6 +24,9 @@ metadata:
   namespace: warehouse
 spec:
   # Client entry point (impala-shell, Hue, JDBC/HS2 protocol). Any impalad can coordinate.
+  # An HS2 session and its query handles live on one coordinator, and Hue may reconnect to
+  # fetch results, so each client stays on the same impalad.
+  sessionAffinity: ClientIP
   selector:
     app: impala
     role: impalad

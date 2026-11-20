@@ -236,7 +236,10 @@ spec:
           args:
             - -hostname=$(POD_FQDN)
             - -use_resolved_hostname=false
-            - -principal=impala/$(POD_FQDN)@WAREHOUSE.LAB
+            # Clients authenticate to the shared Service principal (any coordinator behind Service
+            # impala); daemon-to-daemon traffic keeps the per-pod principal.
+            - -principal=impala/impala.warehouse.svc.cluster.local@WAREHOUSE.LAB
+            - -be_principal=impala/$(POD_FQDN)@WAREHOUSE.LAB
             - -keytab_file=/etc/impala/keytab/$(POD_NAME).keytab
             - -state_store_host=impala-statestored-0.impala-headless.warehouse.svc.cluster.local
             - -catalog_service_host=impala-catalogd-0.impala-headless.warehouse.svc.cluster.local
