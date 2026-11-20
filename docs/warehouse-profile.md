@@ -79,6 +79,17 @@ for role in catalogd impalad_coord_exec; do
 done
 ```
 
+### `jpoblete73/impala:4.5.3-*-hive4` (`docker/impala-hive4`)
+
+`apache/impala:4.5.3-catalogd` and `-impalad_coord_exec` with one class replaced in `impala-frontend`: `org.apache.impala.compat.MetastoreShim` (**modified** from the 4.5.3 tag). The upstream images are built against Cloudera Hive and reject any table whose metastore `accessType` is unset; Hive 4 leaves it unset unless the client sends processor capabilities, which catalogd's table load does not. The patched class treats unset as `READWRITE`; tables the metastore does mark keep their value. ACID and bucketing checks are unchanged.
+
+```bash
+for role in catalogd impalad_coord_exec; do
+  docker buildx build --platform linux/amd64 --build-arg ROLE=$role \
+    -t jpoblete73/impala:4.5.3-$role-hive4 --push docker/impala-hive4
+done
+```
+
 ### `hive-on-k8s/hue-trino` (`docker/hue-trino`)
 
 `gethue/hue:latest` bundles SQLAlchemy 1.3.8, which cannot load `sqlalchemy-trino`. This image upgrades SQLAlchemy to **1.4.x** and installs `sqlalchemy-trino==0.5.0` and `trino==0.329.0` into Hue's own venv (`/usr/share/hue/build/env`). It is built for `linux/amd64` because the upstream base is amd64 only.
