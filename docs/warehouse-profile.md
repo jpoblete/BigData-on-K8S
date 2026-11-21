@@ -96,6 +96,8 @@ Verified: from the Hue pod, SQLAlchemy lists the `hive` schema (`default`) and t
 
 Not yet verified: running a query end to end through Hue's UI for both Hive and Trino.
 
+The Trino editor is section `[[[presto]]]` with `interface=trino` (2026-11-21). Hue 4.12 takes the editor's SQL dialect from the section name, ignores a `dialect=` key, and ships no `trino` parser, so a `[[[trino]]]` section falls back to the generic parser. That parser reads `hive.demo.clickstream` as table `demo` in database `hive`, and treats `WITH` names as tables, so the Tables panel shows orange warnings. The `presto` parser understands Trino SQL. Queries saved under the old `trino` type may not reopen from history.
+
 ## Cassandra for Trino (two datacenters)
 
 Trino's Cassandra connector supports only `PASSWORD` auth, so it can't read the Kerberos ring directly. The ring (`cassandra-0..2`, DC `warehouse`, RF=3) stays Kerberos-only. A single node `cassandra-trino` in a second DC, `trino` (RF=1), joins the same cluster with `PasswordAuthenticator` and mutual TLS; Trino reads and writes only that DC, and replication keeps the two DCs in sync. Design and provisioning steps: [cassandra-trino-two-dc-design.md](cassandra-trino-two-dc-design.md).
