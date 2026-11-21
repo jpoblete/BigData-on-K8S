@@ -2,6 +2,10 @@
 
 > `hiveCtl.sh` manages the full lab stack (Hive, HDFS, Ranger, Kerberos, Cassandra, Trino, Impala, Hue), not only Hive.
 
+![Hue's Trino editor on the warehouse profile: one session querying a Cassandra table and an Iceberg table on HDFS](docs/images/hue-trino-cassandra-iceberg.png)
+
+*Hue's Trino editor on the `warehouse` profile, querying the Kerberized Cassandra ring (`cassandra.demo.dummy_10_10_10`) and an Iceberg table on HDFS (`iceberg.default.iceberg_orc_3_1`) in the same session.*
+
 ## Author
 
 José Martínez-Poblete  
