@@ -3958,9 +3958,32 @@ function getPasswd(){
    printf '%s\n' "${value}"
 }
 
-# Print everything known about one Hive query id: HS2 log lines (SQL, user, session, timings,
-# errors), Tez application/DAG ids and their cached exports, LLAP fragments, and sys.query_history.
+# Print everything known about one Hive query id, then repeat every line flagged "!!" as a summary.
 function queryDetails(){
+   queryDetailsReport "$@" | awk '
+      { print }
+      /^ *!!/ {
+         line = $0; sub(/^ *!! */, "", line)
+         if (line in seen) next
+         seen[line] = 1
+         # Keep the "<<<" explanation when shortening long lines.
+         if (length(line) > 300) {
+            k = index(line, "   <<< ")
+            line = (k > 0) ? substr(line, 1, 180) " ..." substr(line, k) : substr(line, 1, 300)
+         }
+         p[++n] = line
+      }
+      END {
+         print ""
+         print "--- potential problems ---"
+         if (n == 0) print "  (none found)"
+         for (i = 1; i <= n; i++) print "  " p[i]
+      }'
+   return "${PIPESTATUS[0]}"
+}
+# HS2 log lines (SQL, user, session, timings, errors), Tez application/DAG ids and their cached
+# exports, LLAP task attempts with their log lines, and sys.query_history.
+function queryDetailsReport(){
    local namespace="$1"
    local qid="$2"
    local pods=() llap_pods=() container_args=() pod remote
@@ -4025,12 +4048,17 @@ printf '%s\n%s\n' "${compile_lines}" "${exec_lines}" | grep -E "${ts_re}" \
 echo "  --- Tez session / DAG execution ---"
 tez="$(printf '%s\n' "${exec_lines}" | grep -E "${ts_re}" | grep -E 'TezSessionPoolManager: Choosing|Session is already open|Tez session was closed|Opening new Tez Session|Shutting down Tez Session|Session re-established|Submitting dag to TezSession|Running vertex:|Status: |LogToFileFunction: ' \
    | sed -E 's/^([0-9T:,-]+) +[A-Z]+ +\[[^]]*\] [^:]+: /\1  /; s/dagName=.*/dagName=.../; s/LocalResources: .*//; s/ : TaskScheduler=.*//' | cut -c1-300 | awk '!seen[$0]++')"
-[ -n "${tez}" ] && printf '%s\n' "${tez}" | sed 's/^/  /' || echo "  (no Tez DAG: fetch task / metadata-only query)"
+# Potential problems are prefixed "!! " and explained after "<<<"; queryDetails repeats them at the end.
+[ -n "${tez}" ] && printf '%s\n' "${tez}" | sed -E 's/^/  /
+   s/^  (.*Tez session was closed.*)$/!! \1   <<< pooled Tez session was dead and had to be reopened (adds latency)/
+   s/^  (.*Status: (Failed|Killed).*)$/!! \1   <<< DAG did not succeed/' \
+   || echo "  (no Tez DAG: fetch task / metadata-only query)"
 summary="$(printf '%s\n' "${exec_lines}" | sed -nE 's/^[0-9T:,-]+ +INFO +\[[^]]*\] SessionState: ?//p' \
    | awk '/^Query Execution Summary/ { on = 1 } on { print }' | grep -v '^Status: ')"
 if [ -n "${summary}" ]; then
    echo "  --- execution summary and counters ---"
-   printf '%s\n' "${summary}" | sed 's/^/  /'
+   printf '%s\n' "${summary}" | sed -E 's/^/  /
+      s/^  ( *(NUM_FAILED_SHUFFLE_INPUTS|DESERIALIZE_ERRORS|ADDITIONAL_SPILL_COUNT|SHUFFLE_BYTES_TO_DISK|NUM_FAILED_TASKS|NUM_KILLED_TASKS|NUM_SPECULATIONS|BAD_ID|CONNECTION|IO_ERROR|WRONG_LENGTH|WRONG_MAP|WRONG_REDUCE): [1-9][0-9]*)$/!! \1   <<< non-zero/'
 fi
 apps="$(printf '%s\n' "${exec_lines}" | grep -oE 'dag_[0-9]+_[0-9]+_[0-9]+' | sort -u)"
 # The execution thread also logs the Tez session it reused or replaced; the DAG names the real one.
@@ -4047,7 +4075,9 @@ for app in $(printf '%s\n' "${apps}" | grep '^application_'); do
 done
 echo "  --- warnings / errors ---"
 err="$(printf '%s\n%s\n' "${compile_lines}" "${exec_lines}" | grep -E ' (WARN|ERROR|FATAL) |Exception|FAILED:' | grep -vE "${benign_re}" | awk '!seen[$0]++' | head -40)"
-[ -n "${err}" ] && printf '%s\n' "${err}" | cut -c1-400 | sed 's/^/  /' || echo "  (none)"
+[ -n "${err}" ] && printf '%s\n' "${err}" | cut -c1-400 | sed -E 's/^/!! /
+   s/(No Stats for ([^@ ]+)@([^, ]+),.*)$/\1   <<< planner has no column stats: ANALYZE TABLE \2.\3 COMPUTE STATISTICS FOR COLUMNS/' \
+   || echo "  (none)"
 EOS
 )"
 
@@ -4089,7 +4119,20 @@ grep -a -h -F -- "${prefix}" "${logs[@]}" 2>/dev/null | tr -d '\000' | grep -v '
          }
          tag = (lvl == "INFO" || lvl == "DEBUG") ? "" : lvl " "
          if (!(a in seen)) { seen[a] = 1; order[++n] = a }
-         if (detail != "0") body[a] = body[a] "    " ts "  " tag (line ~ /Final Counters for/ ? line : substr(line, 1, 260)) "\n"
+         why = ""
+         if (lvl == "WARN" || lvl == "ERROR" || lvl == "FATAL") why = lvl
+         if (line ~ /Exception|Throwable/) why = "exception"
+         if (line ~ /endReason=/ && line !~ /endReason=SUCCESS/) why = "task attempt did not succeed"
+         if (line ~ /[Pp]reempt(ing|ed) / || line ~ /Kill(ing)? (task|fragment)/) why = "preemption / kill"
+         if (line ~ /[Ff]etch(er)? fail|Failed to fetch|failed to fetch|retrying fetch/) why = "shuffle fetch failure"
+         if (line ~ /Final Counters for/) {
+            n_bad = split("NUM_FAILED_SHUFFLE_INPUTS ADDITIONAL_SPILL_COUNT SHUFFLE_BYTES_TO_DISK DESERIALIZE_ERRORS", bad, " ")
+            for (b = 1; b <= n_bad; b++) if (match(line, bad[b] "=[1-9][0-9]*")) why = why (why == "" ? "" : ", ") substr(line, RSTART, RLENGTH)
+         }
+         if (why != "") {
+            problems[a] = problems[a] "!! attempt_" a "  " ts "  " why "\n"
+            if (detail != "0") body[a] = body[a] "  !! " ts "  " tag (line ~ /Final Counters for/ ? line : substr(line, 1, 260)) "   <<< " why "\n"
+         } else if (detail != "0") body[a] = body[a] "    " ts "  " tag (line ~ /Final Counters for/ ? line : substr(line, 1, 260)) "\n"
          if (line ~ /ExecutionTime for Container:/) { c = line; sub(/.*Container: /, "", c); sub(/=.*/, "", c); cont[a] = c }
          if (line ~ /vertexName: /) { v = line; sub(/.*vertexName: /, "", v); vert[a] = v }
          if ($0 ~ /\[Task-Executor-[0-9]+ /) { e = $0; sub(/^[^[]*\[/, "", e); sub(/ .*/, "", e); exe[a] = e }
@@ -4097,7 +4140,9 @@ grep -a -h -F -- "${prefix}" "${logs[@]}" 2>/dev/null | tr -d '\000' | grep -v '
       END {
          for (i = 1; i <= n; i++) {
             a = order[i]
-            printf "  attempt_%s  %s  %s  %s\n%s", a, (vert[a] != "" ? vert[a] : "?"), (cont[a] != "" ? cont[a] : "?"), exe[a], body[a]
+            retry = (a ~ /_[1-9][0-9]*$/) ? "   <<< retry attempt" : ""
+            printf "%s attempt_%s  %s  %s  %s%s\n%s", (retry != "" ? "!!" : " "), a, (vert[a] != "" ? vert[a] : "?"), (cont[a] != "" ? cont[a] : "?"), exe[a], retry, body[a]
+            if (detail == "0") printf "%s", problems[a]
          }
       }'
 EOS
@@ -4134,12 +4179,24 @@ EOS
                    result[c] = (f["Succeeded"] == "true") ? "SUCCEEDED" : "FAILED" }
          }
          END {
-            printf "  %-10s %-6s %-34s %-13s %-16s %8s %8s  %s\n", "VERTEX", "TASK", "CONTAINER", "LLAP", "EXECUTOR", "QUEUE_MS", "RUN_MS", "RESULT"
+            printf "   %-10s %-6s %-34s %-13s %-16s %8s %8s  %s\n", "VERTEX", "TASK", "CONTAINER", "LLAP", "EXECUTOR", "QUEUE_MS", "RUN_MS", "RESULT"
+            m = 0
+            for (i = 1; i <= n; i++) {
+               c = order[i]
+               if (start[c] != "" && end[c] != "") { v = end[c] - start[c]; for (j = m; j > 0 && runs[j] > v; j--) runs[j + 1] = runs[j]; runs[j + 1] = v; m++ }
+            }
+            median = (m > 0) ? runs[int((m + 1) / 2)] : 0
             for (i = 1; i <= n; i++) {
                c = order[i]
                q = (submit[c] != "" && start[c] != "") ? start[c] - submit[c] : "-"
                r = (start[c] != "" && end[c] != "") ? end[c] - start[c] : "-"
-               printf "%s\t  %-10s %-6s %-34s %-13s %-16s %8s %8s  %s\n", vertex[c] "\t" (submit[c] != "" ? submit[c] : start[c]), vertex[c], task[c], c, host[c], (thread[c] != "" ? thread[c] : "-"), q, r, (result[c] != "" ? result[c] : "RUNNING")
+               res = (result[c] != "" ? result[c] : "RUNNING")
+               why = ""
+               if (res != "SUCCEEDED") why = "not succeeded"
+               if (q != "-" && q + 0 > 1000) why = why (why == "" ? "" : ", ") "queued " q " ms (executors busy)"
+               if (task[c] !~ /\.0$/) why = why (why == "" ? "" : ", ") "retry attempt"
+               if (r != "-" && r + 0 > 1000 && median > 0 && r + 0 > 5 * median) why = why (why == "" ? "" : ", ") sprintf("long task: %.0fx the median %d ms (data skew or heavy stage)", r / median, median)
+               printf "%s\t%s %-10s %-6s %-34s %-13s %-16s %8s %8s  %s%s\n", vertex[c] "\t" (submit[c] != "" ? submit[c] : start[c]), (why != "" ? "!!" : "  "), vertex[c], task[c], c, host[c], (thread[c] != "" ? thread[c] : "-"), q, r, res, (why != "" ? "   <<< " why : "")
             }
          }' | { IFS= read -r header; printf '%s\n' "${header}"; sort -t $'\t' -k1,1 -k2,2n | cut -f3-; }
    fi
