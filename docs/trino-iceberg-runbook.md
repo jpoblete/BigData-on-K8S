@@ -26,7 +26,7 @@ Keep it next to `warehouse-profile.md`.
 All Trino configuration is in `overlays/warehouse/trino/`:
 
 - `iceberg.properties`: the `iceberg` catalog. Metastore settings, `hive.config.resources`, and HDFS Kerberos settings.
-- `hive.properties`: the `hive` catalog. Unchanged. Hive is not modified by this work.
+- `hive.properties`: the `hive` catalog. Unchanged by the Iceberg work; HDFS access was added later (see below).
 - `trino-hdfs` ConfigMap (generated from `hdfs/core-site.xml` and `hdfs/hdfs-site.xml`): Trino's own HDFS client config, mounted at `/etc/trino/hdfs`.
 - `jvm.config`: `-Djava.security.krb5.conf`, `-Djava.security.krb5.realm=WAREHOUSE.LAB`, `-Djava.security.krb5.kdc=krb5kdc.warehouse.svc`.
 - `service.yaml`: the `trino` Service is a NodePort on `30080`, so the UI is reachable through the bastion at `http://34.234.33.208:30080/ui/`.
@@ -79,6 +79,6 @@ SELECT * FROM iceberg.default.iceberg_orc_3_1 LIMIT 10;
 
 ## Open items
 
-- The `hive` catalog does not set `hive.hdfs.authentication.type`. Plain (non-Iceberg) Hive table reads through Trino may need the same setting. Not yet tested, because the warehouse has no non-Iceberg table in `hive.default` to test against.
+- The `hive` catalog now has the same HDFS and Kerberos settings as `iceberg` (2026-11-21). Without them it saw metadata only ("Unsupported file system scheme hdfs"). It also sets `hive.temporary-staging-directory-enabled=false`, because HDFS `/tmp` is `hive`-owned `700`. Trino can't write into Hive's warehouse directory (`hive`-owned `755`), so its tables go in schema `hive.demo`, whose directory `trino` owns. Verified with `samples/trino/hive-clickstream-showcase.sql` (ORC, partitioned, 56,000 rows).
 - Trino's Iceberg read was stable only after the HDFS Kerberos setting. Re-verify after any change to `jvm.config` or `iceberg.properties`.
 - The Trino UI has no authentication configured. It is reachable on the bastion at port `30080` by anyone who can reach it.
