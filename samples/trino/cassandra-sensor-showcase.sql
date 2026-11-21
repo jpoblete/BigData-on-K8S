@@ -1,6 +1,7 @@
 -- Usage Notice: This project is not meant for commercial use without permission and proper credit.
 -- Author: j.martinez.poblete@gmail.com
--- Trino on Cassandra showcase (warehouse profile). Run in Hue's Trino editor or:
+-- Trino on Cassandra showcase (warehouse profile). Trino SQL; Hive can't read Cassandra tables.
+-- Run in Hue's Trino editor or:
 --   kubectl -n warehouse exec -i trino-coordinator-0 -- trino -f /dev/stdin < samples/trino/cassandra-sensor-showcase.sql
 -- 12 sensors x 4 sites, one reading every 15 minutes for 20 days (23,040 rows); sensor-07 overheats on 2026-11-13.
 

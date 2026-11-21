@@ -100,6 +100,33 @@ Known cosmetic issue: the Tables panel shows orange warnings for queries that us
 
 Pin the Hue image by digest (`overlays/warehouse/hue/statefulset.yaml`). With `gethue/hue:latest`, each node keeps whichever build it pulled first, and a pod that moves to a node with an older build fails every login against the newer schema ("Field 'session_hash' doesn't have a default value").
 
+## Trino SQL vs HiveQL
+
+Trino and Hive read the same metastore tables but speak different SQL dialects. A query written in Hue's Trino editor usually fails in the Hive editor, and the reverse. Impala's dialect is closer to HiveQL, but it is a third dialect.
+
+References:
+
+- Trino: [SQL statements](https://trino.io/docs/current/sql.html), [functions and operators](https://trino.io/docs/current/functions.html), [Hive connector](https://trino.io/docs/current/connector/hive.html).
+- Hive: [LanguageManual](https://cwiki.apache.org/confluence/display/Hive/LanguageManual), [built-in functions (UDFs)](https://cwiki.apache.org/confluence/display/Hive/LanguageManual+UDF), [windowing and analytics](https://cwiki.apache.org/confluence/display/Hive/LanguageManual+WindowingAndAnalytics), [GROUPING SETS / ROLLUP](https://cwiki.apache.org/confluence/display/Hive/Enhanced+Aggregation%2C+Cube%2C+Grouping+and+Rollup).
+- Impala: [SQL reference](https://impala.apache.org/docs/build/html/topics/impala_langref.html).
+
+Differences that come up in this lab's samples:
+
+| Trino | HiveQL |
+|-------|--------|
+| `hive.demo.clickstream` (catalog.schema.table) | `demo.clickstream` (database.table) |
+| `CAST(x AS varchar)` | `CAST(x AS STRING)` (`varchar` needs a length) |
+| `date_diff('minute', a, b)` | `(unix_timestamp(b) - unix_timestamp(a)) / 60` |
+| `bool_or(cond)` | `max(IF(cond, 1, 0)) = 1` |
+| `count_if(cond)` | `sum(IF(cond, 1, 0))` |
+| `approx_percentile(x, 0.5)` | `percentile_approx(x, 0.5)` |
+| `GROUP BY ROLLUP (a, b)` | `GROUP BY a, b WITH ROLLUP` (newer Hive also accepts `ROLLUP (a, b)`) |
+| `grouping(a, b)` (bitmask over several columns) | `grouping(a)` per column, or `GROUPING__ID` |
+| `GROUP BY 1, 2` | Column names (positions need `hive.groupby.position.alias=true`) |
+| `MATCH_RECOGNIZE`, `max_by`, `UNNEST` | Not available (`LATERAL VIEW explode()` replaces `UNNEST`) |
+
+The samples in [`samples/trino/`](../samples/trino/) are Trino SQL. Run them in the Trino editor, not the Hive editor.
+
 ## Cassandra for Trino (two datacenters)
 
 Trino's Cassandra connector supports only `PASSWORD` auth, so it can't read the Kerberos ring directly. The ring (`cassandra-0..2`, DC `warehouse`, RF=3) stays Kerberos-only. A single node `cassandra-trino` in a second DC, `trino` (RF=1), joins the same cluster with `PasswordAuthenticator` and mutual TLS; Trino reads and writes only that DC, and replication keeps the two DCs in sync. Design and provisioning steps: [cassandra-trino-two-dc-design.md](cassandra-trino-two-dc-design.md).

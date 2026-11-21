@@ -44,6 +44,7 @@ The **`warehouse`** profile now has two SQL engines next to Hive. Both use the s
   - `cassandra` reads a Kerberos-only Cassandra ring through a password + mTLS node in a second datacenter ([design](docs/cassandra-trino-two-dc-design.md)).
   - `mysql`, `postgres`, and `oracle` read each database's `bigdata` schema ([catalogs](docs/trino-database-catalogs.md)).
 - **Provisioning:** `./hiveCtl.sh start warehouse` creates the passwords, schemas, Trino database users, Cassandra certificates, and Cassandra role, so a new cluster comes up with every catalog working.
+- **Dialect:** Trino SQL is not HiveQL, so a query from the Trino editor usually fails in the Hive editor. See [Trino SQL vs HiveQL](docs/warehouse-profile.md#trino-sql-vs-hiveql) for references and common translations.
 - **Access:** a **Trino editor in Hue** (custom `hue-trino` image), and the Trino UI on NodePort `30080`. Guides: [Iceberg runbook](docs/trino-iceberg-runbook.md), [warehouse profile](docs/warehouse-profile.md).
 
 ### Impala: an MPP engine next to the DataNodes

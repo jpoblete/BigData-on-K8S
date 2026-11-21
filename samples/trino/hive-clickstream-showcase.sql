@@ -1,6 +1,7 @@
 -- Usage Notice: This project is not meant for commercial use without permission and proper credit.
 -- Author: j.martinez.poblete@gmail.com
--- Trino on Hive showcase (warehouse profile). Run in Hue's Trino editor or:
+-- Trino on Hive showcase (warehouse profile). Trino SQL, not HiveQL: it fails in the Hive editor
+-- (see docs/warehouse-profile.md, "Trino SQL vs HiveQL"). Run in Hue's Trino editor or:
 --   kubectl -n warehouse exec -i trino-coordinator-0 -- trino -f /dev/stdin < samples/trino/hive-clickstream-showcase.sql
 -- 200 users x 14 days x 20 clicks (56,000 rows), ORC, one Hive partition per day. Desktop and weekends
 -- convert better, Germany worse. Schema demo lives in a trino-owned HDFS directory, created once as hdfs:
