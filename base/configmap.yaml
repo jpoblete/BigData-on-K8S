@@ -646,6 +646,16 @@ data:
        #
        cd "${HIVE_HOME}" || exit 1
        ln -s "${HIVE_HOME}/conf/hive-log4j2.properties" "${HIVE_HOME}/conf/log4j.properties"
+       # Hive sets tez.application.tags on every DAG and the local-mode Tez AM has no CLA appender,
+       # so these two loggers WARN once per query with nothing to act on.
+       if [ "${SERVICE}" == "hiveserver2" ] && ! grep -q '^logger.TezConfigurationFactory' "${HIVE_HOME}/conf/hive-log4j2.properties"; then
+          printf '\n%s\n' \
+             'logger.TezConfigurationFactory.name = org.apache.hadoop.hive.ql.exec.tez.TezConfigurationFactory' \
+             'logger.TezConfigurationFactory.level = ERROR' \
+             'logger.TezUtilsInternal.name = org.apache.tez.common.TezUtilsInternal' \
+             'logger.TezUtilsInternal.level = ERROR' \
+             >> "${HIVE_HOME}/conf/hive-log4j2.properties" || true
+       fi
        if [ "${SERVICE}" == "metastore" ]; then
           echo "Initializing ${SERVICE^} schema as user: $(whoami)"
           "${HIVE_HOME}/bin/schematool" -dbType mysql -initOrUpgradeSchema

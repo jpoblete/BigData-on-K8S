@@ -3987,23 +3987,50 @@ logs=("${log_dir}"/hiveserver2*.log*)
 [ "${#logs[@]}" -gt 0 ] || { echo "  (no hiveserver2 logs under ${log_dir})"; exit 0; }
 hits="$(grep -h -F -- "${QID}" "${logs[@]}" 2>/dev/null)"
 [ -n "${hits}" ] || { echo "  (query id not found in ${#logs[@]} log file(s))"; exit 0; }
+ts_re='^[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9:,]+ '
+# Benign WARNs Hive/Tez log on every DAG; also silenced at the source in hive-log4j2.properties.
+benign_re='Skip adding .tez.application.tags. to dagConf|No Tez VCore size specified by hive.tez.cpu.vcores|Not configured with appender named: CLA|HiveConf of name .* does not exist'
+stamped="$(printf '%s\n' "${hits}" | grep -E "${ts_re}")"
 echo "  log lines:      $(printf '%s\n' "${hits}" | wc -l | tr -d ' ')"
-echo "  first seen:     $(printf '%s\n' "${hits}" | head -1 | cut -c1-23)"
-echo "  last seen:      $(printf '%s\n' "${hits}" | tail -1 | cut -c1-23)"
-sess="$(printf '%s\n' "${hits}" | grep -oE 'HiveServer2-Handler-Pool[^]]*|sessionId=[0-9a-f-]+|SessionHandle \[[0-9a-f-]+\]' | sort -u | head -5)"
-[ -n "${sess}" ] && printf '  session/thread: %s\n' ${sess}
+echo "  first seen:     $(printf '%s\n' "${stamped}" | head -1 | cut -c1-23)"
+echo "  last seen:      $(printf '%s\n' "${stamped}" | tail -1 | cut -c1-23)"
+sess="$(printf '%s\n' "${hits}" | grep -oE 'sessionId=[0-9a-f-]+|SessionHandle \[[0-9a-f-]+\]' | sort -u | head -5)"
+[ -n "${sess}" ] && printf '  session:        %s\n' ${sess}
+# Lines of the thread that logged <start marker> for this query, up to its end marker.
+# Untimestamped continuation lines (multi-line SQL, stack traces) are kept with the line before.
+thread_block(){
+   awk -v q="${QID}" -v start="$1" -v stop="$2" -v ts="${ts_re}" '
+      !on && index($0, start "(queryId=" q ")") {
+         on = 1; t = $0; sub(/^[^[]*\[/, "", t); sub(/\].*$/, "", t); t = "[" t "]"
+      }
+      on && $0 ~ ts { keep = index($0, t) > 0 }
+      on && keep { print }
+      on && keep && index($0, q) && $0 ~ stop { exit }
+   ' "${logs[@]}" 2>/dev/null
+}
+compile_lines="$(thread_block "Compiling command" "Completed compiling command|FAILED:")"
+exec_lines="$(thread_block "Executing command" "Completed executing command|FAILED:|Failed to execute")"
+threads="$(printf '%s\n%s\n' "${compile_lines}" "${exec_lines}" | grep -E "${ts_re}" | grep -oE '\[[^]]*Thread-[0-9]+\]' | sed -E 's/^\[([0-9a-f-]{36} )?//; s/\]$//' | sort -u)"
+[ -n "${threads}" ] && printf '%s\n' "${threads}" | sed 's/^/  thread:         /'
 echo "  --- SQL ---"
-printf '%s\n' "${hits}" | grep -m1 -E 'Compiling command\(queryId=' | sed 's/^.*Compiling command(queryId=[^)]*): */  /'
+printf '%s\n' "${compile_lines}" | awk -v ts="${ts_re}" '
+   /Compiling command\(queryId=/ { sub(/^.*Compiling command\(queryId=[^)]*\): */, ""); print; on = 1; next }
+   on && $0 ~ ts { exit }
+   on { print }' | sed 's/^/  /'
 echo "  --- lifecycle ---"
-printf '%s\n' "${hits}" | grep -E 'Compiling command|Completed compiling|Executing command|Completed executing|Semantic Analysis Completed|Returning Hive schema|Time taken|query state|Concurrency mode|Starting task|Launching Job|Status: (Running|DAG finished|Failed|Killed)' | cut -c1-400 | sed 's/^/  /'
-# Lines logged by the execution thread between "Executing command" and its completion.
-exec_lines="$(awk -v q="${QID}" '
-   !on && index($0, "Executing command(queryId=" q ")") {
-      on = 1; t = $0; sub(/^[^[]*\[/, "", t); sub(/\].*$/, "", t); t = "[" t "]"
-   }
-   on && index($0, t) { print }
-   on && index($0, q) && $0 ~ /Completed executing command|FAILED:|Failed to execute/ { exit }
-' "${logs[@]}" 2>/dev/null)"
+printf '%s\n%s\n' "${compile_lines}" "${exec_lines}" | grep -E "${ts_re}" \
+   | grep -E 'Compiling command|Completed compiling|Executing command|Completed executing|Starting task|Launching Job|Re-execution decision|FAILED:' \
+   | sed -E 's/(command\(queryId=[^)]*\)): .*/\1/' | cut -c1-300 | sed 's/^/  /'
+echo "  --- Tez session / DAG execution ---"
+tez="$(printf '%s\n' "${exec_lines}" | grep -E "${ts_re}" | grep -E 'TezSessionPoolManager: Choosing|Session is already open|Tez session was closed|Opening new Tez Session|Shutting down Tez Session|Session re-established|Submitting dag to TezSession|Running vertex:|Status: |LogToFileFunction: ' \
+   | sed -E 's/^([0-9T:,-]+) +[A-Z]+ +\[[^]]*\] [^:]+: /\1  /; s/dagName=.*/dagName=.../; s/LocalResources: .*//; s/ : TaskScheduler=.*//' | cut -c1-300 | awk '!seen[$0]++')"
+[ -n "${tez}" ] && printf '%s\n' "${tez}" | sed 's/^/  /' || echo "  (no Tez DAG: fetch task / metadata-only query)"
+summary="$(printf '%s\n' "${exec_lines}" | sed -nE 's/^[0-9T:,-]+ +INFO +\[[^]]*\] SessionState: ?//p' \
+   | awk '/^Query Execution Summary/ { on = 1 } on { print }' | grep -v '^Status: ')"
+if [ -n "${summary}" ]; then
+   echo "  --- execution summary and counters ---"
+   printf '%s\n' "${summary}" | sed 's/^/  /'
+fi
 apps="$(printf '%s\n' "${exec_lines}" | grep -oE 'dag_[0-9]+_[0-9]+_[0-9]+' | sort -u)"
 # The execution thread also logs the Tez session it reused or replaced; the DAG names the real one.
 if [ -n "${apps}" ]; then
@@ -4018,7 +4045,7 @@ for app in $(printf '%s\n' "${apps}" | grep '^application_'); do
    [ -f "${f}" ] && echo "  cached Tez export: ${f} ($(wc -l < "${f}" | tr -d ' ') lines)"
 done
 echo "  --- warnings / errors ---"
-err="$(grep -h -F -A15 -- "${QID}" "${logs[@]}" 2>/dev/null | grep -E ' (WARN|ERROR|FATAL) |Exception|FAILED:' | sort -u | head -40)"
+err="$(printf '%s\n%s\n' "${compile_lines}" "${exec_lines}" | grep -E ' (WARN|ERROR|FATAL) |Exception|FAILED:' | grep -vE "${benign_re}" | awk '!seen[$0]++' | head -40)"
 [ -n "${err}" ] && printf '%s\n' "${err}" | cut -c1-400 | sed 's/^/  /' || echo "  (none)"
 EOS
 )"

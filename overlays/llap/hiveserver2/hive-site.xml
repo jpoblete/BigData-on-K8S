@@ -136,6 +136,10 @@
          <name>hive.tez.container.size</name>
          <value>1024</value>
       </property>
+      <property>
+         <name>hive.tez.cpu.vcores</name>
+         <value>1</value>
+      </property>
       <!-- LLAP daemons: executors share the heap (LLAP_DAEMON_HEAPSIZE), the IO cache is off-heap -->
       <property>
          <name>hive.llap.daemon.work.dirs</name>

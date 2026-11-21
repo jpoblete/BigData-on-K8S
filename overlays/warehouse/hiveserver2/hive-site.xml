@@ -226,6 +226,10 @@
          <value>1024</value>
       </property>
       <property>
+         <name>hive.tez.cpu.vcores</name>
+         <value>1</value>
+      </property>
+      <property>
          <name>hive.llap.daemon.work.dirs</name>
          <value>/opt/hive/llap/work</value>
       </property>
