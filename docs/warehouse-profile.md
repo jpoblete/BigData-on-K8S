@@ -182,3 +182,65 @@ Keytab resync for this profile: `./hiveCtl.sh resync-keytabs warehouse` refreshe
 | Impala (catalogd ↔ Hive 4 metastore, queries on HDFS and Iceberg tables) | Verified (2026-11-20) |
 | Hue → Impala editor | Verified via Hue's client (`INSERT`, `SELECT`, Iceberg `GROUP BY`) |
 | Cloudera / EC2 deployment | Not started |
+
+## What a healthy warehouse looks like
+
+Reference snapshot from the live cluster (2026-11-21): 1 control-plane node and 5 workers, `warehouse` fully up with Ranger, Trino, and Impala. 29 pods, all `1/1 Running` with 0 restarts.
+
+```text
+$ kubectl get nodes -o wide
+NAME                          STATUS   ROLES           AGE   VERSION   INTERNAL-IP   EXTERNAL-IP   OS-IMAGE             KERNEL-VERSION   CONTAINER-RUNTIME
+ip-10-0-44-129.ec2.internal   Ready    llap            25d   v1.34.3   10.0.44.129   <none>        Ubuntu 22.04.5 LTS   6.8.0-1051-aws   containerd://2.1.4
+ip-10-0-46-20.ec2.internal    Ready    llap            25d   v1.34.3   10.0.46.20    <none>        Ubuntu 22.04.5 LTS   6.8.0-1051-aws   containerd://2.1.4
+ip-10-0-64-153.ec2.internal   Ready    llap            25d   v1.34.3   10.0.64.153   <none>        Ubuntu 22.04.5 LTS   6.8.0-1051-aws   containerd://2.1.4
+ip-10-0-70-68.ec2.internal    Ready    llap            25d   v1.34.3   10.0.70.68    <none>        Ubuntu 22.04.5 LTS   6.8.0-1051-aws   containerd://2.1.4
+ip-10-0-78-233.ec2.internal   Ready    control-plane   25d   v1.34.3   10.0.78.233   <none>        Ubuntu 22.04.5 LTS   6.8.0-1051-aws   containerd://2.1.4
+ip-10-0-86-220.ec2.internal   Ready    llap            25d   v1.34.3   10.0.86.220   <none>        Ubuntu 22.04.5 LTS   6.8.0-1051-aws   containerd://2.1.4
+
+$ kubectl get pods -n warehouse -o wide
+NAME                   READY   STATUS    RESTARTS   AGE     IP               NODE                          NOMINATED NODE   READINESS GATES
+cassandra-0            1/1     Running   0          3d19h   10.233.103.118   ip-10-0-70-68.ec2.internal    <none>           <none>
+cassandra-1            1/1     Running   0          3d19h   10.233.96.108    ip-10-0-46-20.ec2.internal    <none>           <none>
+cassandra-2            1/1     Running   0          3d19h   10.233.112.181   ip-10-0-86-220.ec2.internal   <none>           <none>
+cassandra-trino-0      1/1     Running   0          2d22h   10.233.96.140    ip-10-0-46-20.ec2.internal    <none>           <none>
+hadoop-datanode-0      1/1     Running   0          20h     10.233.96.11     ip-10-0-46-20.ec2.internal    <none>           <none>
+hadoop-datanode-1      1/1     Running   0          20h     10.233.112.184   ip-10-0-86-220.ec2.internal   <none>           <none>
+hadoop-datanode-2      1/1     Running   0          20h     10.233.103.120   ip-10-0-70-68.ec2.internal    <none>           <none>
+hadoop-namenode-0      1/1     Running   0          20h     10.233.74.33     ip-10-0-44-129.ec2.internal   <none>           <none>
+hivemetastore-0        1/1     Running   0          19h     10.233.74.44     ip-10-0-44-129.ec2.internal   <none>           <none>
+hivemetastore-1        1/1     Running   0          19h     10.233.77.171    ip-10-0-64-153.ec2.internal   <none>           <none>
+hiveserver2-0          1/1     Running   0          15h     10.233.77.177    ip-10-0-64-153.ec2.internal   <none>           <none>
+hiveserver2-1          1/1     Running   0          15h     10.233.74.60     ip-10-0-44-129.ec2.internal   <none>           <none>
+hue-0                  1/1     Running   0          16h     10.233.74.50     ip-10-0-44-129.ec2.internal   <none>           <none>
+impala-catalogd-0      1/1     Running   0          19h     10.233.74.47     ip-10-0-44-129.ec2.internal   <none>           <none>
+impala-statestored-0   1/1     Running   0          20h     10.233.77.167    ip-10-0-64-153.ec2.internal   <none>           <none>
+impalad-0              1/1     Running   0          18h     10.233.96.164    ip-10-0-46-20.ec2.internal    <none>           <none>
+impalad-1              1/1     Running   0          18h     10.233.112.188   ip-10-0-86-220.ec2.internal   <none>           <none>
+impalad-2              1/1     Running   0          18h     10.233.103.126   ip-10-0-70-68.ec2.internal    <none>           <none>
+krb5kdc-0              1/1     Running   0          3d19h   10.233.96.110    ip-10-0-46-20.ec2.internal    <none>           <none>
+llapdaemon-0           1/1     Running   0          3d19h   10.233.103.119   ip-10-0-70-68.ec2.internal    <none>           <none>
+llapdaemon-1           1/1     Running   0          3d19h   10.233.112.182   ip-10-0-86-220.ec2.internal   <none>           <none>
+mysql-0                1/1     Running   0          3d19h   10.233.74.236    ip-10-0-44-129.ec2.internal   <none>           <none>
+oracle-0               1/1     Running   0          3d19h   10.233.77.164    ip-10-0-64-153.ec2.internal   <none>           <none>
+postgres-0             1/1     Running   0          3d19h   10.233.74.237    ip-10-0-44-129.ec2.internal   <none>           <none>
+ranger-0               1/1     Running   0          3d19h   10.233.96.116    ip-10-0-46-20.ec2.internal    <none>           <none>
+trino-coordinator-0    1/1     Running   0          2d22h   10.233.74.247    ip-10-0-44-129.ec2.internal   <none>           <none>
+trino-worker-0         1/1     Running   0          2d22h   10.233.96.141    ip-10-0-46-20.ec2.internal    <none>           <none>
+trino-worker-1         1/1     Running   0          2d22h   10.233.74.246    ip-10-0-44-129.ec2.internal   <none>           <none>
+zookeeper-0            1/1     Running   0          3d19h   10.233.96.111    ip-10-0-46-20.ec2.internal    <none>           <none>
+```
+
+What to check against this snapshot (pod IPs, node names, and ages will differ):
+
+| Component | Pods | Healthy placement |
+|-----------|------|-------------------|
+| KDC, ZooKeeper | `krb5kdc-0`, `zookeeper-0` | Any worker |
+| HDFS | `hadoop-namenode-0`, `hadoop-datanode-0..2` | Three DataNodes on three different nodes (required anti-affinity) |
+| Impala | `impala-statestored-0`, `impala-catalogd-0`, `impalad-0..2` | Each `impalad` on a DataNode node, one per node. Here `impalad-0/1/2` share `ip-10-0-46-20`, `-86-220`, `-70-68` with `hadoop-datanode-0/1/2` |
+| Hive | `hivemetastore-0/1`, `hiveserver2-0/1`, `llapdaemon-0/1` | LLAP daemons on `node-role.kubernetes.io/llap` workers |
+| Cassandra | `cassandra-0..2` (Kerberos ring), `cassandra-trino-0` (`trino` DC) | Ring members on different nodes |
+| Trino | `trino-coordinator-0`, `trino-worker-0/1` | Any worker |
+| Databases | `mysql-0`, `postgres-0`, `oracle-0` | Any worker |
+| Ranger, Hue | `ranger-0`, `hue-0` | Any worker; one Hue pod by design |
+
+Nothing runs on the control-plane node except `impalad`, which tolerates it but only lands there if a DataNode does. A pod stuck `Pending` usually means a node-bound local-path PV whose node is gone, or an `impalad` with no free DataNode node. `0/1 Running` for long on `hadoop-namenode-0` means it is waiting for 3 live DataNodes. `./hiveCtl.sh status` gives the same view per component with ready/total counts.
