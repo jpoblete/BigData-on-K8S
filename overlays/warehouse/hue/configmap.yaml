@@ -189,4 +189,6 @@ data:
     [[[trino]]]
     name=Trino
     interface=trino
+    # Hue has no "trino" SQL parser; presto's understands catalog.schema.table and WITH.
+    dialect=presto
     options='{"url": "http://trino.warehouse.svc.cluster.local:8080", "trino_user": "hue", "catalog": "hive", "schema": "default"}'
