@@ -125,7 +125,7 @@ Differences that come up in this lab's samples:
 | `GROUP BY 1, 2` | Column names (positions need `hive.groupby.position.alias=true`) |
 | `MATCH_RECOGNIZE`, `max_by`, `UNNEST` | Not available (`LATERAL VIEW explode()` replaces `UNNEST`) |
 
-The samples in [`samples/trino/`](../samples/trino/) are Trino SQL. Run them in the Trino editor, not the Hive editor.
+The samples in [`samples/trino/`](../samples/trino/) are Trino SQL; run them in the Trino editor. [`samples/hive/clickstream-funnel.hql`](../samples/hive/clickstream-funnel.hql) is the HiveQL translation of the clickstream funnel and returns the same rows in the Hive editor (verified 2026-11-21).
 
 ## Cassandra for Trino (two datacenters)
 
