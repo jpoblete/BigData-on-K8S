@@ -4057,17 +4057,51 @@ EOS
       kubectl exec -n "${namespace}" "${pod}" "${container_args[@]}" -- env QID="${qid}" bash -c "${remote}" 2>&1
    done
 
+   local llap_hits="" fragments=""
    for pod in "${llap_pods[@]}"; do
       echo ""
       echo "--- LLAP ${pod} ---"
-      kubectl exec -n "${namespace}" "${pod}" -- env QID="${qid}" bash -c '
+      llap_hits="$(kubectl exec -n "${namespace}" "${pod}" -- env QID="${qid}" bash -c '
          shopt -s nullglob; logs=("${HIVE_HOME:-/opt/hive}"/log/llapdaemon*.log*)
-         hits="$(grep -a -h -F -- "${QID}" "${logs[@]}" 2>/dev/null | tr -d "\000")"
-         [ -n "${hits}" ] || { echo "  log lines: 0"; exit 0; }
-         echo "  log lines: $(printf "%s\n" "${hits}" | wc -l | tr -d " ")"
-         printf "%s\n" "${hits}" | grep -oE "attempt_[0-9]+_[0-9]+_[0-9]+_[0-9]+_[0-9]+_[0-9]+" | sort -u | head -30 | sed "s/^/  fragment: /"
-         printf "%s\n" "${hits}" | cut -c1-300 | head -40 | sed "s/^/  /"' 2>&1
+         grep -a -h -F -- "${QID}" "${logs[@]}" 2>/dev/null | tr -d "\000"' 2>&1)"
+      if [ -z "${llap_hits}" ]; then
+         echo "  log lines: 0"
+         continue
+      fi
+      echo "  log lines: $(printf '%s\n' "${llap_hits}" | wc -l | tr -d ' ')"
+      fragments="${fragments}$(printf '%s\n' "${llap_hits}" | grep '^Event=FRAGMENT_')"$'\n'
+      echo "  fragments: $(printf '%s\n' "${llap_hits}" | grep -c '^Event=FRAGMENT_END')"
+      # Queueing/completion/object-cache lines repeat the container table; QueryTracker logs a fake ERROR per query.
+      printf '%s\n' "${llap_hits}" | grep -vE '^Event=FRAGMENT_|ObjectCacheFactory|Queueing container for execution|request SUCCE|QueryTracker: Ignore this' \
+         | grep -E ' (WARN|ERROR|FATAL) |Exception|request FAIL|KILLED' | cut -c1-300 | sed 's/^/  /'
    done
+
+   if [ -n "${fragments//[[:space:]]/}" ]; then
+      echo ""
+      echo "--- LLAP containers per vertex ---"
+      # Join FRAGMENT_START (SubmitTime) and FRAGMENT_END (StartTime, EndTime, executor, result) on ContainerId.
+      printf '%s\n' "${fragments}" | awk -F', ' '
+         /^Event=FRAGMENT_/ {
+            delete f
+            for (i = 1; i <= NF; i++) { k = $i; sub(/=.*/, "", k); v = $i; sub(/^[^=]*=/, "", v); f[k] = v }
+            c = f["ContainerId"]
+            if (!(c in vertex)) order[++n] = c
+            vertex[c] = f["VertexName"]; task[c] = f["TaskId"] "." f["TaskAttemptId"]
+            host[c] = f["HostName"]; sub(/\..*/, "", host[c])
+            if (f["Event"] == "FRAGMENT_START") submit[c] = f["SubmitTime"]
+            else { start[c] = f["StartTime"]; end[c] = f["EndTime"]; thread[c] = f["ThreadName"]
+                   result[c] = (f["Succeeded"] == "true") ? "SUCCEEDED" : "FAILED" }
+         }
+         END {
+            printf "  %-10s %-6s %-34s %-13s %-16s %8s %8s  %s\n", "VERTEX", "TASK", "CONTAINER", "LLAP", "EXECUTOR", "QUEUE_MS", "RUN_MS", "RESULT"
+            for (i = 1; i <= n; i++) {
+               c = order[i]
+               q = (submit[c] != "" && start[c] != "") ? start[c] - submit[c] : "-"
+               r = (start[c] != "" && end[c] != "") ? end[c] - start[c] : "-"
+               printf "%s\t  %-10s %-6s %-34s %-13s %-16s %8s %8s  %s\n", vertex[c] "\t" (submit[c] != "" ? submit[c] : start[c]), vertex[c], task[c], c, host[c], (thread[c] != "" ? thread[c] : "-"), q, r, (result[c] != "" ? result[c] : "RUNNING")
+            }
+         }' | { IFS= read -r header; printf '%s\n' "${header}"; sort -t $'\t' -k1,1 -k2,2n | cut -f3-; }
+   fi
 
    echo ""
    echo "--- sys.query_history (${pods[0]}) ---"
