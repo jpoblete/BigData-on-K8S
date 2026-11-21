@@ -137,6 +137,10 @@ Trino's Cassandra connector supports only `PASSWORD` auth, so it can't read the 
 
 Impala shares the Hive Metastore with Hive and Trino, so all three engines see the same tables and HDFS files. Trino has no Impala connector; Trino and Impala meet at the metastore, not through each other.
 
+- **Automatic sync.** The metastore runs `DbNotificationListener` (`hive.metastore.transactional.event.listeners`), and catalogd polls its events. Tables created or altered from Hive or Trino appear in Impala within seconds, without `INVALIDATE METADATA`. Databases created before the listener was enabled need one `INVALIDATE METADATA` in Impala.
+- **File format.** Create shared tables as ORC (the Trino `hive` catalog default here, `hive.storage-format=ORC`). Impala can't read Trino-written Parquet: `uses an unsupported encoding: DELTA_LENGTH_BYTE_ARRAY`.
+- **Trino reading Impala tables.** Query them as `hive.<db>.<table>`.
+
 | Pod | Role | Kerberos principal |
 |-----|------|--------------------|
 | `impala-statestored-0` | Cluster membership | `impala/impala-statestored-0.impala-headless.warehouse.svc.cluster.local` |
