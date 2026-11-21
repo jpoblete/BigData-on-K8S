@@ -45,6 +45,7 @@ function help(){
    echo "        hiveCtl get passwd <overlay> <alias>   (print one password from hive-credentials)"
    echo "        hiveCtl get passwd <alias>             (same; overlay defaults to secure, or HIVECTL_PASSWD_OVERLAY)"
    echo "        hiveCtl query <overlay> <queryId>   (SQL, user, timings, Tez/LLAP ids, errors, sys.query_history)"
+   echo "          HIVECTL_QUERY_LLAP_DETAIL=0 lists LLAP task attempts without their log lines"
    echo "        hiveCtl status   (active components, ready/total pod counts, web UI NodePort when exposed)"
    echo ""
    echo "Hue (standalone|mini|llap|secure|warehouse): port-forward (standalone=8885, mini=8886, llap=8887, secure=8888, warehouse=8889)"
@@ -4057,23 +4058,63 @@ EOS
       kubectl exec -n "${namespace}" "${pod}" "${container_args[@]}" -- env QID="${qid}" bash -c "${remote}" 2>&1
    done
 
-   local llap_hits="" fragments=""
+   # Per LLAP daemon: lines naming the query, plus every line of this DAG's task attempts
+   # (thread names carry the attempt id, e.g. "TezTR-... (1795294749265_0001_1_01_000000_0)").
+   local llap_remote
+   llap_remote="$(cat <<'EOS'
+shopt -s nullglob
+logs=("${HIVE_HOME:-/opt/hive}"/log/llapdaemon*.log*)
+qlines="$(grep -a -h -F -- "${QID}" "${logs[@]}" 2>/dev/null | tr -d '\000')"
+[ -n "${qlines}" ] || exit 0
+printf '%s\n' "${qlines}" | grep '^Event=FRAGMENT_' | sed 's/^/@@FRAG /'
+app="$(printf '%s\n' "${qlines}" | grep -m1 -oE 'ApplicationId=application_[0-9]+_[0-9]+' | sed 's/.*application_//')"
+dag="$(printf '%s\n' "${qlines}" | grep -m1 -oE 'DagId=[0-9]+' | sed 's/DagId=//')"
+[ -n "${app}" ] && [ -n "${dag}" ] || exit 0
+prefix="${app}_${dag}_"
+grep -a -h -F -- "${prefix}" "${logs[@]}" 2>/dev/null | tr -d '\000' | grep -v '^Event=' \
+   | grep -E '^[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T' \
+   | awk -v p="${prefix}" -v detail="${LLAP_DETAIL:-1}" '
+      {
+         a = ""
+         if (match($0, "[0-9]+_[0-9]+_[0-9]+_[0-9][0-9]_[0-9]+_[0-9]+")) a = substr($0, RSTART, RLENGTH)
+         if (a == "" || index(a, p) != 1) next
+         line = $0
+         lvl = $2; ts = substr($1, 12)
+         sub(/^[^]]*\] /, "", line)
+         if (lvl == "DEBUG") {
+            if (line !~ /<\/PERFLOG/) next
+            m = line; sub(/.*method=/, "", m); sub(/ .*/, "", m)
+            d = line; sub(/.*duration=/, "", d); sub(/ .*/, "", d)
+            line = "PerfLogger: " m " " d " ms"
+         }
+         tag = (lvl == "INFO" || lvl == "DEBUG") ? "" : lvl " "
+         if (!(a in seen)) { seen[a] = 1; order[++n] = a }
+         if (detail != "0") body[a] = body[a] "    " ts "  " tag (line ~ /Final Counters for/ ? line : substr(line, 1, 260)) "\n"
+         if (line ~ /ExecutionTime for Container:/) { c = line; sub(/.*Container: /, "", c); sub(/=.*/, "", c); cont[a] = c }
+         if (line ~ /vertexName: /) { v = line; sub(/.*vertexName: /, "", v); vert[a] = v }
+         if ($0 ~ /\[Task-Executor-[0-9]+ /) { e = $0; sub(/^[^[]*\[/, "", e); sub(/ .*/, "", e); exe[a] = e }
+      }
+      END {
+         for (i = 1; i <= n; i++) {
+            a = order[i]
+            printf "  attempt_%s  %s  %s  %s\n%s", a, (vert[a] != "" ? vert[a] : "?"), (cont[a] != "" ? cont[a] : "?"), exe[a], body[a]
+         }
+      }'
+EOS
+)"
+   local llap_out="" fragments=""
    for pod in "${llap_pods[@]}"; do
       echo ""
       echo "--- LLAP ${pod} ---"
-      llap_hits="$(kubectl exec -n "${namespace}" "${pod}" -- env QID="${qid}" bash -c '
-         shopt -s nullglob; logs=("${HIVE_HOME:-/opt/hive}"/log/llapdaemon*.log*)
-         grep -a -h -F -- "${QID}" "${logs[@]}" 2>/dev/null | tr -d "\000"' 2>&1)"
-      if [ -z "${llap_hits}" ]; then
-         echo "  log lines: 0"
+      llap_out="$(kubectl exec -n "${namespace}" "${pod}" -- env QID="${qid}" LLAP_DETAIL="${HIVECTL_QUERY_LLAP_DETAIL:-1}" bash -c "${llap_remote}" 2>&1)"
+      if [ -z "${llap_out}" ]; then
+         echo "  (query id not found)"
          continue
       fi
-      echo "  log lines: $(printf '%s\n' "${llap_hits}" | wc -l | tr -d ' ')"
-      fragments="${fragments}$(printf '%s\n' "${llap_hits}" | grep '^Event=FRAGMENT_')"$'\n'
-      echo "  fragments: $(printf '%s\n' "${llap_hits}" | grep -c '^Event=FRAGMENT_END')"
-      # Queueing/completion/object-cache lines repeat the container table; QueryTracker logs a fake ERROR per query.
-      printf '%s\n' "${llap_hits}" | grep -vE '^Event=FRAGMENT_|ObjectCacheFactory|Queueing container for execution|request SUCCE|QueryTracker: Ignore this' \
-         | grep -E ' (WARN|ERROR|FATAL) |Exception|request FAIL|KILLED' | cut -c1-300 | sed 's/^/  /'
+      fragments="${fragments}$(printf '%s\n' "${llap_out}" | sed -n 's/^@@FRAG //p')"$'\n'
+      echo "  fragments: $(printf '%s\n' "${llap_out}" | grep -c '^@@FRAG Event=FRAGMENT_END')"
+      # QueryTracker logs a fake ERROR ("Ignore this") once per query.
+      printf '%s\n' "${llap_out}" | grep -v '^@@FRAG ' | grep -v 'QueryTracker: Ignore this'
    done
 
    if [ -n "${fragments//[[:space:]]/}" ]; then
@@ -4120,7 +4161,8 @@ EOS
       if printf "%s\n" "${out}" | grep -q "Table not found .query_history"; then
          echo "  (table missing: set hive.query.history.enabled=true in HiveServer2 hive-site.xml and restart HS2)"
       elif [ -z "${out}" ] || printf "%s\n" "${out}" | grep -q "No rows selected"; then
-         echo "  (no row yet: records are flushed every hive.query.history.flush.interval.seconds or batch.size queries)"
+         echo "  (no row yet: a query is recorded when its operation is closed (Hue keeps result handles open until the"
+         echo "   session/tab closes), then flushed every hive.query.history.flush.interval.seconds or batch.size queries)"
       else
          printf "%s\n" "${out}" | sed "s/^/  /"
       fi' 2>&1 \
