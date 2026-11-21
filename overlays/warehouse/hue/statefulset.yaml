@@ -44,7 +44,9 @@ spec:
               mountPath: /config
               readOnly: true
         - name: hue-migrate
-          image: gethue/hue:latest
+          # Pinned (Hue 4.12): with :latest each node keeps whichever build it pulled first, and an older
+          # build on a fresh node fails logins against the newer schema (axes "session_hash").
+          image: gethue/hue@sha256:d7e035a571cd81d84981b6f52839b1c352b993f5ee7e7567f7899cf907b9e523
           imagePullPolicy: IfNotPresent
           securityContext:
             runAsUser: 0
@@ -94,7 +96,7 @@ spec:
               readOnly: true
       containers:
         - name: hue
-          image: gethue/hue:latest
+          image: gethue/hue@sha256:d7e035a571cd81d84981b6f52839b1c352b993f5ee7e7567f7899cf907b9e523
           imagePullPolicy: IfNotPresent
           command: ["/bin/bash", "/config/entrypoint.sh"]
           ports:
