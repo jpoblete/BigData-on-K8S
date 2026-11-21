@@ -6,6 +6,10 @@
 
 *Hue's Trino editor on the `warehouse` profile: `MATCH_RECOGNIZE` over the Cassandra table `cassandra.demo.sensor_readings` finds a sensor's overheating episode ([sample](samples/trino/cassandra-sensor-showcase.sql)).*
 
+![Hue's Trino editor on the warehouse profile running a sessionized funnel with ROLLUP over a partitioned Hive ORC table](docs/images/hue-trino-hive-clickstream-rollup.png)
+
+*Same editor on Hive: sessionization with window functions and a conversion funnel with `ROLLUP` subtotals over the partitioned ORC table `hive.demo.clickstream` ([sample](samples/trino/hive-clickstream-showcase.sql)).*
+
 ## Author
 
 José Martínez-Poblete  
