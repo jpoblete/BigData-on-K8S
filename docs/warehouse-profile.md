@@ -96,7 +96,9 @@ Verified: from the Hue pod, SQLAlchemy lists the `hive` schema (`default`) and t
 
 Not yet verified: running a query end to end through Hue's UI for both Hive and Trino.
 
-The Trino editor is section `[[[presto]]]` with `interface=trino` (2026-11-21). Hue 4.12 takes the editor's SQL dialect from the section name, ignores a `dialect=` key, and ships no `trino` parser, so a `[[[trino]]]` section falls back to the generic parser. That parser reads `hive.demo.clickstream` as table `demo` in database `hive`, and treats `WITH` names as tables, so the Tables panel shows orange warnings. The `presto` parser understands Trino SQL. Queries saved under the old `trino` type may not reopen from history.
+Known cosmetic issue: the Tables panel shows orange warnings for queries that use `catalog.schema.table` names or `WITH`. Hue 4.12 takes the editor's SQL dialect from the interpreter section name, ignores a `dialect=` key, and ships no `trino` parser, so the Trino editor uses the generic parser. That parser reads `hive.demo.clickstream` as table `demo` in database `hive`, and treats `WITH` names as tables. Renaming the section to `[[[presto]]]` picks the Presto parser and removes the warnings, but results then never show: the editor only tracks Trino's `next_uri` when the type is `trino` (tried and reverted 2026-11-21). With the right schema selected in the editor, short table names (`FROM clickstream`) avoid the first warning.
+
+Pin the Hue image by digest (`overlays/warehouse/hue/statefulset.yaml`). With `gethue/hue:latest`, each node keeps whichever build it pulled first, and a pod that moves to a node with an older build fails every login against the newer schema ("Field 'session_hash' doesn't have a default value").
 
 ## Cassandra for Trino (two datacenters)
 

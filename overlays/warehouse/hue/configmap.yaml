@@ -186,9 +186,10 @@ data:
     [[[impala]]]
     name=Impala
     interface=hiveserver2
-    # Section key = editor dialect. Hue 4.12 ships no "trino" SQL parser (falls back to generic, which
-    # misreads catalog.schema.table and WITH names); "presto" gets the Presto parser, same SQL.
-    [[[presto]]]
+    # Must stay "trino": Hue's editor only tracks Trino's next_uri (needed to fetch results) for type
+    # "trino". The cost is the generic SQL parser, so the Tables panel may flag catalog.schema.table
+    # and WITH names; queries are unaffected.
+    [[[trino]]]
     name=Trino
     interface=trino
     options='{"url": "http://trino.warehouse.svc.cluster.local:8080", "trino_user": "hue", "catalog": "hive", "schema": "default"}'
