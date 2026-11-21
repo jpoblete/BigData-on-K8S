@@ -47,6 +47,10 @@
       <property>
          <name>hive.metastore.dml.events</name>
          <value>true</value>
+      </property>
+      <property>
+         <name>hive.metastore.transactional.event.listeners</name>
+         <value>org.apache.hive.hcatalog.listener.DbNotificationListener</value>
       </property>      <property>
          <name>hive.llap.daemon.service.principal</name>
          <value>hive/_HOST@WAREHOUSE.LAB</value>

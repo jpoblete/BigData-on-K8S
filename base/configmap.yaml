@@ -165,6 +165,14 @@ data:
     
     # Folder containing extra libraries required for hive compilation/execution can be controlled by:
     # export HIVE_AUX_JARS_PATH=
+    # Metastore only: DbNotificationListener (hive.metastore.transactional.event.listeners) ships in
+    # hcatalog, which is not on the metastore classpath. Without it HMS records no events.
+    if [ "${SERVICE:-}" = "metastore" ]; then
+       for _jar in /opt/hive/hcatalog/share/hcatalog/hive-hcatalog-server-extensions-*.jar; do
+          [ -f "${_jar}" ] && export HIVE_AUX_JARS_PATH="${_jar}"
+       done
+       unset _jar
+    fi
     
     # HIVE Log Directory can be controlled by the following and ensure it exists on the filesystem:
     export HIVE_LOG_DIR=/opt/hive/log
