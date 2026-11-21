@@ -6,9 +6,18 @@
 
 *Hue's Trino editor on the `warehouse` profile: `MATCH_RECOGNIZE` over the Cassandra table `cassandra.demo.sensor_readings` finds a sensor's overheating episode ([sample](samples/trino/cassandra-sensor-showcase.sql)).*
 
-![Hue's Trino editor on the warehouse profile running a sessionized funnel with ROLLUP over a partitioned Hive ORC table](docs/images/hue-trino-hive-clickstream-rollup.png)
+<table>
+  <tr>
+    <th>Trino SQL (Trino editor)</th>
+    <th>HiveQL (Hive editor)</th>
+  </tr>
+  <tr>
+    <td><img src="docs/images/hue-trino-hive-clickstream-rollup.png" alt="Hue's Trino editor running a sessionized funnel with ROLLUP over hive.demo.clickstream"></td>
+    <td><img src="docs/images/hue-hive-clickstream-rollup.png" alt="Hue's Hive editor running the HiveQL translation of the same funnel over demo.clickstream"></td>
+  </tr>
+</table>
 
-*Same editor on Hive: sessionization with window functions and a conversion funnel with `ROLLUP` subtotals over the partitioned ORC table `hive.demo.clickstream` ([sample](samples/trino/hive-clickstream-showcase.sql)).*
+*The same sessionized conversion funnel with `ROLLUP` subtotals over the partitioned ORC table `demo.clickstream`, written once per dialect. Both return the same 21 rows ([Trino sample](samples/trino/hive-clickstream-showcase.sql), [HiveQL sample](samples/hive/clickstream-funnel.hql), [dialect differences](docs/warehouse-profile.md#trino-sql-vs-hiveql)).*
 
 ## Author
 
