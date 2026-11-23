@@ -46,6 +46,8 @@ function help(){
    echo "        hiveCtl get passwd <alias>             (same; overlay defaults to secure, or HIVECTL_PASSWD_OVERLAY)"
    echo "        hiveCtl query <overlay> <queryId>   (SQL, user, timings, Tez/LLAP ids, errors, sys.query_history)"
    echo "          HIVECTL_QUERY_LLAP_DETAIL=0 lists LLAP task attempts without their log lines"
+   echo "          also takes Impala ids (1b4138221c508f22:7e847f3600000000: profile + impalad logs)"
+   echo "          and Trino ids (20261121_195608_00000_f335r: stats, stages, tasks, operators + logs)"
    echo "        hiveCtl status   (active components, ready/total pod counts, web UI NodePort when exposed)"
    echo ""
    echo "Hue (standalone|mini|llap|secure|warehouse): port-forward (standalone=8885, mini=8886, llap=8887, secure=8888, warehouse=8889)"
@@ -3958,9 +3960,340 @@ function getPasswd(){
    printf '%s\n' "${value}"
 }
 
-# Print everything known about one Hive query id, then repeat every line flagged "!!" as a summary.
+# Annotate an Impala text profile (stdin): flagged lines start with "!! " and end with "<<< reason".
+IMPALA_PROFILE_PY="$(cat <<'PY'
+import html, re, sys
+
+UNIT_NS = {"h": 3.6e12, "m": 6e10, "s": 1e9, "ms": 1e6, "us": 1e3, "ns": 1}
+
+def dur_ns(text):
+    parts = re.findall(r"(\d+(?:\.\d+)?)(ms|us|ns|h|m|s)", text)
+    return sum(float(v) * UNIT_NS[u] for v, u in parts) if parts else None
+
+def count(text):
+    m = re.match(r"^([\d.]+)([KMB]?)$", text.strip())
+    return float(m.group(1)) * {"": 1, "K": 1e3, "M": 1e6, "B": 1e9}[m.group(2)] if m else None
+
+in_summary = False
+for line in html.unescape(sys.stdin.read()).splitlines():
+    s = line.strip()
+    why = None
+    if s.startswith("Query Status:") and s != "Query Status: OK":
+        why = "query did not succeed"
+    elif s.startswith("WARNING:"):
+        why = "planner warning"
+    elif s.startswith("Tables Missing Stats:"):
+        why = "planner has no stats: COMPUTE STATS " + s.split(":", 1)[1].split(",")[0].strip()
+    elif s.startswith("Tables With Corrupt Table Stats:"):
+        why = "corrupt table stats: run COMPUTE STATS again"
+    elif s.startswith("Errors:") and s != "Errors:":
+        why = "query errors"
+    elif s.startswith("Admission result:") and "Admitted immediately" not in s:
+        why = "query was queued by admission control"
+    m = re.match(r"- (ScratchBytesWritten|SpilledPartitions|SpilledRuns): (.+)$", s)
+    if m and not re.match(r"^0(\.0+)?( B)?( \(0\))?$", m.group(2)):
+        why = "spilled to disk (operator memory limit too low)"
+    m = re.match(r"- Completed admission: \S+ \((\S+)\)", s)
+    if m and (dur_ns(m.group(1)) or 0) > 1e9:
+        why = "waited %s in the admission queue" % m.group(1)
+    if s.startswith("ExecSummary:"):
+        in_summary = True
+    elif in_summary:
+        if not s or not (re.match(r"^[A-Z0-9]+:", s) or s.startswith("Operator") or set(s) == {"-"}):
+            in_summary = False
+        elif re.match(r"^[A-Z0-9]+:", s):
+            # Operator, #Hosts, #Inst, Avg Time, Max Time, #Rows, Est. #Rows, Peak Mem, Est. Peak Mem, Detail
+            cols = re.split(r"\s{2,}", s)
+            notes = []
+            if len(cols) >= 5:
+                avg, top = dur_ns(cols[3]), dur_ns(cols[4])
+                if avg and top and top >= 1e9 and top > 5 * avg:
+                    notes.append("skew: max time %.0fx the average" % (top / avg))
+            if len(cols) >= 7:
+                rows, est = count(cols[5]), count(cols[6])
+                if rows and est and max(rows, est) >= 1e4 and max(rows / est, est / rows) > 10:
+                    notes.append("row estimate off %.0fx (stale or missing stats)" % max(rows / est, est / rows))
+            if notes:
+                why = ", ".join(notes)
+    print("!! " + line + "   <<< " + why if why else "   " + line)
+PY
+)"
+
+# Render Trino's /v1/query/<id> JSON (stdin): summary, SQL, failure, stages, tasks, operators.
+TRINO_QUERY_PY="$(cat <<'PY'
+import json, re, statistics, sys
+
+q = json.load(sys.stdin)
+qs = q.get("queryStats", {})
+sess = q.get("session", {})
+
+def ms(v):
+    m = re.match(r"^([\d.]+)(ns|us|ms|s|m|h|d)$", str(v or ""))
+    return float(m.group(1)) * {"ns": 1e-6, "us": 1e-3, "ms": 1, "s": 1e3, "m": 6e4, "h": 3.6e6, "d": 8.64e7}[m.group(2)] if m else 0.0
+
+def nbytes(v):
+    m = re.match(r"^([\d.]+)(B|kB|MB|GB|TB|PB)$", str(v or ""))
+    return float(m.group(1)) * {"B": 1, "kB": 1024, "MB": 1024**2, "GB": 1024**3, "TB": 1024**4, "PB": 1024**5}[m.group(2)] if m else 0.0
+
+def human(n):
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if n < 1024 or unit == "TB":
+            return ("%.0f %s" if unit == "B" else "%.2f %s") % (n, unit)
+        n /= 1024.0
+
+def out(text, why=None):
+    print("!! " + text + "   <<< " + why if why else "   " + text)
+
+def section(title):
+    print("")
+    print("--- %s ---" % title)
+
+state = q.get("state", "?")
+section("summary")
+out("state:          %s" % state, None if state == "FINISHED" else "query did not finish successfully")
+out("user:           %s   source: %s" % (sess.get("user"), sess.get("source") or sess.get("userAgent")))
+out("catalog/schema: %s.%s   query type: %s   retry policy: %s" % (sess.get("catalog") or "-", sess.get("schema") or "-", q.get("queryType"), q.get("retryPolicy")))
+out("resource group: %s" % ".".join(q.get("resourceGroupId") or []))
+out("created:        %s   execution start: %s   end: %s" % (qs.get("createTime"), qs.get("executionStartTime"), qs.get("endTime")))
+for key, label, limit, why in (
+        ("elapsedTime", "elapsed", None, None),
+        ("queuedTime", "queued", 1000, "waited in the resource group queue"),
+        ("resourceWaitingTime", "waiting for resources", 1000, "waited for workers/resources before starting"),
+        ("dispatchingTime", "dispatching", None, None),
+        ("analysisTime", "analysis", None, None),
+        ("planningTime", "planning", None, None),
+        ("executionTime", "execution", None, None),
+        ("totalCpuTime", "total CPU", None, None),
+        ("totalScheduledTime", "total scheduled", None, None),
+        ("totalBlockedTime", "total blocked", None, None)):
+    v = qs.get(key)
+    out("%-15s %s" % (label + ":", v), why if limit and ms(v) > limit else None)
+out("memory:         peak user %s   peak total %s   peak per task %s" % (
+    human(nbytes(qs.get("peakUserMemoryReservation"))), human(nbytes(qs.get("peakTotalMemoryReservation"))), human(nbytes(qs.get("peakTaskTotalMemory")))))
+out("input:          %s rows, %s physical (%s processed)" % (
+    qs.get("processedInputPositions"), human(nbytes(qs.get("physicalInputDataSize"))), human(nbytes(qs.get("processedInputDataSize")))))
+out("output:         %s rows, %s   written: %s rows, %s" % (
+    qs.get("outputPositions"), human(nbytes(qs.get("outputDataSize"))), qs.get("writtenPositions"), human(nbytes(qs.get("physicalWrittenDataSize")))))
+spilled = nbytes(qs.get("spilledDataSize"))
+out("spilled:        %s" % human(spilled), "spilled to disk (query.max-memory-per-node too low for this query)" if spilled else None)
+failed = qs.get("failedTasks") or 0
+out("tasks:          %s total, %s failed   drivers: %s" % (qs.get("totalTasks"), failed, qs.get("totalDrivers")), "%d task(s) failed" % failed if failed else None)
+tables = ["%s.%s.%s" % (t.get("catalog"), t.get("schema"), t.get("table")) for t in q.get("referencedTables") or []]
+out("tables:         %s" % (", ".join(tables) or "-"))
+
+section("SQL")
+for line in (q.get("query") or "").splitlines():
+    out(line)
+
+failure = q.get("failureInfo")
+warnings = q.get("warnings") or []
+if failure or q.get("errorCode") or warnings:
+    section("failure / warnings")
+    if q.get("errorCode"):
+        out("error code: %s" % json.dumps(q["errorCode"]), "query failed")
+    while failure:
+        out("%s: %s" % (failure.get("type"), failure.get("message")), "failure")
+        for frame in (failure.get("stack") or [])[:12]:
+            out("    at " + frame)
+        failure = failure.get("cause")
+    for w in warnings:
+        out("%s: %s" % ((w.get("warningCode") or {}).get("name"), w.get("message")), "warning")
+
+def plan_tree(node, depth=0):
+    if not isinstance(node, dict):
+        return
+    details = node.get("descriptor") or {}
+    extra = ", ".join("%s=%s" % (k, v) for k, v in details.items() if v not in ("", None))[:200]
+    out("    " + "  " * depth + "%s%s" % (node.get("name"), " [" + extra + "]" if extra else ""))
+    for child in node.get("children") or []:
+        plan_tree(child, depth + 1)
+
+stages = (q.get("stages") or {}).get("stages") or []
+for st in stages:
+    ss = st.get("stageStats", {})
+    tasks = st.get("tasks") or []
+    section("stage %s  %s%s" % (st.get("stageId"), st.get("state"), "  (coordinator only)" if st.get("coordinatorOnly") else ""))
+    out("tasks %s   cpu %s   scheduled %s   blocked %s   input %s rows / %s   output %s rows   peak user mem %s   full GC %s" % (
+        len(tasks), ss.get("totalCpuTime"), ss.get("totalScheduledTime"), ss.get("totalBlockedTime"),
+        ss.get("processedInputPositions"), human(nbytes(ss.get("processedInputDataSize"))), ss.get("outputPositions"),
+        human(nbytes(ss.get("peakUserMemoryReservation"))), (ss.get("gcInfo") or {}).get("totalFullGcSec", "-")),
+        None if st.get("state") in ("FINISHED", "RUNNING", "FLUSHING", "PENDING") else "stage did not finish")
+    try:
+        plan = json.loads((st.get("plan") or {}).get("jsonRepresentation") or "null")
+    except ValueError:
+        plan = None
+    if plan:
+        out("  plan:")
+        plan_tree(plan)
+    if tasks:
+        cpus = [ms(t.get("stats", {}).get("totalCpuTime")) for t in tasks]
+        median = statistics.median(cpus) if cpus else 0
+        out("  %-36s %-22s %-9s %9s %9s %9s %9s %10s %10s %10s %8s" % (
+            "TASK", "NODE", "STATE", "ELAPSED", "QUEUED", "CPU", "BLOCKED", "IN_ROWS", "OUT_ROWS", "PEAK_MEM", "FULL_GC"))
+        for t, cpu in zip(tasks, cpus):
+            ts, s = t.get("taskStatus", {}), t.get("stats", {})
+            node = re.sub(r"^https?://([^:/]+).*$", r"\1", ts.get("self", ""))
+            notes = []
+            if ts.get("state") in ("FAILED", "ABORTED", "CANCELED"):
+                notes.append("task %s" % ts.get("state"))
+            if ms(s.get("fullGcTime")) > 1000:
+                notes.append("full GC %s" % s.get("fullGcTime"))
+            if cpu > 1000 and median and cpu > 5 * median:
+                notes.append("long task: CPU %.0fx the stage median (data skew)" % (cpu / median))
+            if nbytes(s.get("spilledDataSize")):
+                notes.append("spilled %s" % human(nbytes(s.get("spilledDataSize"))))
+            out("  %-36s %-22s %-9s %9s %9s %9s %9s %10s %10s %10s %8s" % (
+                ts.get("taskId"), node, ts.get("state"), s.get("elapsedTime"), s.get("queuedTime"), s.get("totalCpuTime"),
+                s.get("totalBlockedTime"), s.get("processedInputPositions"), s.get("outputPositions"),
+                human(nbytes(s.get("peakUserMemoryReservation"))), s.get("fullGcTime")), ", ".join(notes) or None)
+    ops = ss.get("operatorSummaries") or []
+    if ops:
+        out("  %-4s %-30s %-6s %8s %12s %12s %10s %10s %10s %10s" % (
+            "PIPE", "OPERATOR", "NODE", "DRIVERS", "IN_ROWS", "OUT_ROWS", "WALL", "CPU", "BLOCKED", "PEAK_MEM"))
+        for op in ops:
+            wall = sum(ms(op.get(k)) for k in ("addInputWall", "getOutputWall", "finishWall"))
+            cpu = sum(ms(op.get(k)) for k in ("addInputCpu", "getOutputCpu", "finishCpu"))
+            blocked = ms(op.get("blockedWall"))
+            notes = []
+            drivers = op.get("totalDrivers") or 1
+            # Exchange sources always wait on upstream stages.
+            if op.get("operatorType") not in ("ExchangeOperator", "LocalExchangeSourceOperator", "MergeOperator") \
+                    and blocked / drivers > 1000 and blocked > wall:
+                notes.append("blocked %.0f ms per driver (waiting on memory or downstream)" % (blocked / drivers))
+            if nbytes(op.get("spilledDataSize")):
+                notes.append("spilled %s" % human(nbytes(op.get("spilledDataSize"))))
+            out("  %-4s %-30s %-6s %8s %12s %12s %10s %10s %10s %10s" % (
+                op.get("pipelineId"), op.get("operatorType"), op.get("planNodeId"), op.get("totalDrivers"),
+                op.get("inputPositions"), op.get("outputPositions"), "%.0fms" % wall, "%.0fms" % cpu, "%.0fms" % blocked,
+                human(nbytes(op.get("peakUserMemoryReservation")))), ", ".join(notes) or None)
+PY
+)"
+
+# Impala: profile from the coordinator's web UI (any impalad; reached through the API server proxy,
+# the image has no curl), archived-profile location when it has aged out, and impalad log lines.
+function impalaQueryReport(){
+   local namespace="$1"
+   local qid="$2"
+   local pods=() pod profile="" coordinator="" prefix hits
+
+   if ! [[ "${qid}" =~ ^[0-9a-f]{16}:[0-9a-f]{16}$ ]]; then
+      echo "Invalid Impala query id '${qid}' (expected e.g. 1b4138221c508f22:7e847f3600000000)" >&2
+      return 1
+   fi
+   requireNamespace "${namespace}" || return 1
+   mapfile -t pods < <(kubectl get pods -n "${namespace}" -o name 2>/dev/null | sed -n 's#^pod/\(impalad-[0-9]*\)$#\1#p')
+   if [ "${#pods[@]}" -eq 0 ]; then
+      echo "No impalad pods in namespace '${namespace}'" >&2
+      return 1
+   fi
+
+   echo "=== Impala query ${qid} in namespace ${namespace} ==="
+   for pod in "${pods[@]}"; do
+      profile="$(kubectl get --raw "/api/v1/namespaces/${namespace}/pods/${pod}:25000/proxy/query_profile_plain_text?query_id=${qid}" 2>/dev/null)"
+      if [[ "${profile}" == "Query (id="* ]]; then
+         coordinator="${pod}"
+         break
+      fi
+   done
+
+   echo ""
+   if [ -n "${coordinator}" ]; then
+      echo "--- profile (coordinator ${coordinator}) ---"
+      printf '%s\n' "${profile}" | python3 -c "${IMPALA_PROFILE_PY}"
+   else
+      echo "--- profile ---"
+      echo "  Not in the in-memory query log of ${pods[*]} (each coordinator keeps its last 200 queries)."
+      for pod in "${pods[@]}"; do
+         kubectl exec -n "${namespace}" "${pod}" -- env QID="${qid}" bash -c '
+            for f in /opt/impala/logs/profiles/impala_profile_log_*; do
+               while IFS= read -r line; do
+                  case "${line}" in *" ${QID} "*) echo "  archived on '"${pod}"': ${f} (compressed thrift; decode with impala-profile-tool)"; break 2 ;; esac
+               done < "${f}"
+            done' 2>/dev/null
+      done
+   fi
+
+   # Fragment instance ids share the query id up to the last 8 hex digits.
+   prefix="${qid:0:25}"
+   for pod in "${pods[@]}"; do
+      hits="$(kubectl logs -n "${namespace}" "${pod}" 2>/dev/null | grep -F -- "${prefix}")"
+      echo ""
+      echo "--- impalad log ${pod} ---"
+      if [ -z "${hits}" ]; then
+         echo "   (no lines for this query)"
+         continue
+      fi
+      printf '%s\n' "${hits}" | cut -c1-400 | awk '
+         /^[WEF][0-9]{4} / { lvl = substr($0, 1, 1); print "!! " $0 "   <<< " (lvl == "W" ? "WARNING" : lvl == "E" ? "ERROR" : "FATAL"); next }
+         { print "   " $0 }'
+   done
+}
+
+# Trino: the coordinator's query record (/v1/query/<id>: stats, stages, tasks, operators) and the
+# coordinator/worker log lines that mention the query.
+function trinoQueryReport(){
+   local namespace="$1"
+   local qid="$2"
+   local pods=() pod coordinator="" response code hits
+
+   if ! [[ "${qid}" =~ ^[0-9]{8}_[0-9]{6}_[0-9]{5}_[a-z0-9]{5}$ ]]; then
+      echo "Invalid Trino query id '${qid}' (expected e.g. 20261121_195608_00000_f335r)" >&2
+      return 1
+   fi
+   requireNamespace "${namespace}" || return 1
+   mapfile -t pods < <(kubectl get pods -n "${namespace}" -o name 2>/dev/null | sed -n 's#^pod/\(trino-\(coordinator\|worker\)-[0-9]*\)$#\1#p')
+   for pod in "${pods[@]}"; do
+      [[ "${pod}" == trino-coordinator-* ]] && coordinator="${pod}" && break
+   done
+   if [ -z "${coordinator}" ]; then
+      echo "No Trino coordinator pod in namespace '${namespace}'" >&2
+      return 1
+   fi
+
+   echo "=== Trino query ${qid} in namespace ${namespace} (coordinator ${coordinator}) ==="
+   response="$(kubectl exec -n "${namespace}" "${coordinator}" -- \
+      curl -s -w '\n%{http_code}' -H 'X-Trino-User: hivectl' "http://localhost:8080/v1/query/${qid}" 2>/dev/null)"
+   code="${response##*$'\n'}"
+   if [ "${code}" = "200" ]; then
+      printf '%s\n' "${response%$'\n'*}" | python3 -c "${TRINO_QUERY_PY}"
+   else
+      echo ""
+      echo "--- query record ---"
+      echo "   Not in the coordinator's query history (HTTP ${code:-none}). Finished queries are kept for"
+      echo "   query.min-expire-age (15m) and up to query.max-history (100); older ones only remain in the logs below."
+   fi
+
+   for pod in "${pods[@]}"; do
+      hits="$(kubectl logs -n "${namespace}" "${pod}" 2>/dev/null | grep -F -- "${qid}")"
+      echo ""
+      echo "--- Trino log ${pod} ---"
+      if [ -z "${hits}" ]; then
+         echo "   (no lines for this query)"
+         continue
+      fi
+      printf '%s\n' "${hits}" | sed 's/\x1b\[[0-9;]*m//g' | cut -c1-400 | awk '
+         /[[:space:]](WARN|ERROR)[[:space:]]/ { print "!! " $0 "   <<< " ($0 ~ /[[:space:]]ERROR[[:space:]]/ ? "ERROR" : "WARNING"); next }
+         { print "   " $0 }'
+   done
+}
+
+# Print everything known about one query id (Hive, Impala or Trino, picked from the id format),
+# then repeat every line flagged "!!" as a summary.
 function queryDetails(){
-   queryDetailsReport "$@" | awk '
+   local report
+   case "$2" in
+      hive_*) report=queryDetailsReport ;;
+      [0-9a-f]*:[0-9a-f]*) report=impalaQueryReport ;;
+      [0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]_[0-9][0-9][0-9][0-9][0-9][0-9]_*) report=trinoQueryReport ;;
+      *)
+         echo "Unrecognized query id '$2'. Expected one of:" >&2
+         echo "  Hive    hive_20261120223332_90da32a4-3da3-40d7-965e-524f74325733" >&2
+         echo "  Impala  1b4138221c508f22:7e847f3600000000" >&2
+         echo "  Trino   20261121_195608_00000_f335r" >&2
+         return 1
+         ;;
+   esac
+   "${report}" "$@" | awk '
       { print }
       /^ *!!/ {
          line = $0; sub(/^ *!! */, "", line)
