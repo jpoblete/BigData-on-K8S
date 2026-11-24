@@ -85,6 +85,23 @@ kubectl -n warehouse exec trino-coordinator-0 -- sh -c 'trino --user admin --exe
 kubectl -n warehouse exec trino-coordinator-0 -- sh -c 'trino --user admin --execute "SELECT * FROM oracle.bigdata.sample_customers"'
 ```
 
+## Trino and Impala
+
+Trino has no Impala catalog. Neither the Trino project nor Cloudera ships a Trino connector for Impala, and open-source Trino has no generic JDBC connector to reach it through Cloudera's Impala JDBC driver. A community JDBC plugin or a custom connector would be needed, and either is slower than the current setup, since the data passes through Impala and then Trino.
+
+The two engines share tables through the Hive Metastore instead, the same model Cloudera Data Warehouse uses:
+
+| Engine | Metastore | File |
+|---|---|---|
+| Trino `hive` and `iceberg` catalogs | `hivemetastore-0` only | `overlays/warehouse/trino/hive.properties`, `iceberg.properties` |
+| Impala | `hivemetastore-0` and `hivemetastore-1` | `overlays/warehouse/impala/conf/hive-site.xml` |
+
+So `hive.demo.clickstream` in Trino is the same table and the same files as `demo.clickstream` in Impala; Trino reads the files directly.
+
+- **Statistics.** `COMPUTE STATS` in Impala stores stats in the metastore, where Trino's `hive` catalog can use them. Trino can also write its own with `ANALYZE`.
+- **Metadata caching.** Impala caches metadata. A table Trino creates or changes needs `INVALIDATE METADATA db.tbl` (new table) or `REFRESH db.tbl` (new data) in Impala before Impala sees it. Trino sees Impala's changes on its next query.
+- **Metastore failover.** Trino lists only `hivemetastore-0`, so its `hive` and `iceberg` catalogs fail while that pod is down, even though Impala fails over to `hivemetastore-1`.
+
 ## Known issues and gotchas
 
 - **MySQL connector URL must not include a database.** The database is chosen by the catalog's schema. Including `/bigdata` in `connection-url` crashes the coordinator with `Database (catalog) must not be specified in JDBC URL`.
