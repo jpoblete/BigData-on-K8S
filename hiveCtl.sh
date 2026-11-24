@@ -4156,8 +4156,9 @@ for st in stages:
             blocked = ms(op.get("blockedWall"))
             notes = []
             drivers = op.get("totalDrivers") or 1
-            # Exchange sources always wait on upstream stages.
-            if op.get("operatorType") not in ("ExchangeOperator", "LocalExchangeSourceOperator", "MergeOperator") \
+            # Source operators (exchanges, merges, local sources) always wait on upstream stages.
+            optype = op.get("operatorType") or ""
+            if not (optype.endswith("SourceOperator") or optype in ("ExchangeOperator", "MergeOperator")) \
                     and blocked / drivers > 1000 and blocked > wall:
                 notes.append("blocked %.0f ms per driver (waiting on memory or downstream)" % (blocked / drivers))
             if nbytes(op.get("spilledDataSize")):
