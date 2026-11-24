@@ -4295,7 +4295,73 @@ function queryDetails(){
          ;;
    esac
    "${report}" "$@" | awk '
-      { print }
+      function commas(x,   s, r) {
+         s = sprintf("%d", x); r = ""
+         while (length(s) > 3) { r = "," substr(s, length(s) - 2) r; s = substr(s, 1, length(s) - 3) }
+         return s r
+      }
+      function sorted(list, x,   k, y, t, cnt) {
+         cnt = split(list, x, " ")
+         for (k = 2; k <= cnt; k++) { t = x[k] + 0; for (y = k - 1; y > 0 && x[y] + 0 > t; y--) x[y + 1] = x[y]; x[y + 1] = t }
+         return cnt
+      }
+      function work(v,   o, cnt, k, t, seen, d, w, types, nt, label) {
+         cnt = split(opsv[v], o, " ")
+         for (k = 1; k <= cnt; k++) seen[o[k]]++
+         nt = split("TS MAPJOIN MERGEJOIN JOIN FIL PTF GBY LIM UNION FS", types, " ")
+         split("scan|map join|merge join|shuffle join|filter|window function|group by|limit|union|write result", label, "|")
+         w = ""
+         for (k = 1; k <= nt; k++) {
+            t = types[k]
+            if (!(t in seen)) continue
+            d = label[k]
+            if (t == "TS") {
+               d = d " " (tblv[v] != "" ? tblv[v] : "table")
+               if (files[v] != "") d = d " (" files[v] " files)"
+            }
+            if ((t == "PTF" || t == "GBY" || t == "MAPJOIN") && seen[t] > 1) d = d " x" seen[t]
+            w = w (w == "" ? "" : ", ") d
+         }
+         return (w == "") ? "shuffle / sort only" : w
+      }
+      function runtime(v,   x, cnt) {
+         cnt = sorted(runs[v], x)
+         if (cnt == 0) return "-"
+         if (cnt == 1) return commas(x[1]) " ms"
+         if (cnt == 2) return commas(x[1]) " and " commas(x[2]) " ms"
+         return commas(x[1]) "-" commas(x[cnt]) " ms (median " commas(x[int((cnt + 1) / 2)]) ")"
+      }
+      /^@@OPS / {
+         split(substr($0, 7), f, "\t")
+         if (f[1] != "" && !(f[1] in opsv)) { opsv[f[1]] = f[2]; tblv[f[1]] = f[3] }
+         next
+      }
+      { out[++nout] = $0 }
+      /^=== Query hive_/ { hive = 1 }
+      /^--- / { sec = (index($0, "LLAP containers per vertex") ? "c" : "") }
+      /Query Execution Summary/ { sec = "q" }
+      /Task Execution Summary/ { sec = "t" }
+      /LLAP IO Summary|FileSystem Counters Summary/ { sec = "" }
+      sec == "q" && /^ +[A-Z][A-Za-z ()]+ +[0-9.]+s$/ {
+         name = $0; sub(/ +[0-9.]+s$/, "", name); sub(/^ +/, "", name)
+         qn[++nq] = name; qd[nq] = $NF
+      }
+      sec == "t" && /^ +(Map|Reducer|Union|Merge) [0-9]+ / {
+         v = $1 " " $2
+         if (!(v in tin)) tv[++nt] = v
+         tin[v] = $(NF - 1); tout[v] = $NF
+      }
+      sec == "c" {
+         l = $0; sub(/^(!!)? +/, "", l); split(l, g, " +")
+         if (g[1] ~ /^(Map|Reducer|Union|Merge)$/) {
+            v = g[1] " " g[2]
+            if (!(v in ntask)) cv[++ncv] = v
+            ntask[v]++
+            if (g[8] ~ /^[0-9]+$/) runs[v] = runs[v] " " g[8]
+         }
+      }
+      /^ +INPUT_FILES_/ { k = $1; sub(/:$/, "", k); sub(/^INPUT_FILES_/, "", k); gsub(/_/, " ", k); files[k] = $2 }
+      /Tez session was closed/ { reopened = 1 }
       /^ *!!/ {
          line = $0; sub(/^ *!! */, "", line)
          if (line in seen) next
@@ -4308,6 +4374,36 @@ function queryDetails(){
          p[++n] = line
       }
       END {
+         if (hive && (nq > 0 || nt > 0 || ncv > 0)) {
+            print "--- executive summary ---"
+            if (nq > 0) {
+               split("Compile Query|Prepare Plan|Get Query Coordinator (AM)|Submit Plan|Start DAG|Run DAG", sn, "|")
+               split("Parsing, metastore lookups and the cost-based optimizer|Serializing the plan and building the DAG|Getting a Tez session (AM) from the pool|Sending the DAG to the Tez AM|The AM schedules the first tasks|The actual work on the LLAP daemons", se, "|")
+               for (k = 1; k <= 6; k++) explain[sn[k]] = se[k]
+               if (reopened) explain["Submit Plan"] = explain["Submit Plan"] "; includes reopening the dead Tez session (see problems)"
+               total = 0
+               for (k = 1; k <= nq; k++) total += qd[k] + 0
+               printf "  The query took %.2f s across these steps (from the Query Execution Summary):\n", total
+               printf "  %-28s %7s  %s\n", "STEP", "TIME", "WHAT IT MEANS"
+               for (k = 1; k <= nq; k++) printf "  %-28s %7s  %s\n", qn[k], qd[k], explain[qn[k]]
+               print ""
+            }
+            if (nt == 0) for (k = 1; k <= ncv; k++) { tv[k] = cv[k]; nt = ncv }
+            print "  In Tez, the query plan is a graph of steps called vertices; each vertex runs as one or more"
+            print "  tasks. Read the vertices from top to bottom:"
+            printf "  %-11s %5s  %-44s %-22s %s\n", "VERTEX", "TASKS", "WORK", "ROWS IN -> OUT", "RUN TIME"
+            slow = ""; slowms = -1
+            for (k = 1; k <= nt; k++) {
+               v = tv[k]
+               rows = (v in tin) ? tin[v] " -> " tout[v] : "-"
+               printf "  %-11s %5s  %-44s %-22s %s\n", v, (v in ntask) ? ntask[v] : "-", work(v), rows, runtime(v)
+               cnt = sorted(runs[v], x)
+               if (cnt > 0 && x[cnt] + 0 > slowms) { slowms = x[cnt] + 0; slow = v; slowtasks = ntask[v] }
+            }
+            if (slow != "") printf "  Slowest vertex: %s (%s ms, %d task%s).\n", slow, commas(slowms), slowtasks, (slowtasks == 1 ? "" : "s")
+            print ""
+         }
+         for (k = 1; k <= nout; k++) print out[k]
          print ""
          print "--- potential problems ---"
          if (n == 0) print "  (none found)"
@@ -4438,6 +4534,10 @@ prefix="${app}_${dag}_"
 grep -a -h -F -- "${prefix}" "${logs[@]}" 2>/dev/null | tr -d '\000' | grep -v '^Event=' \
    | grep -E '^[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T' \
    | awk -v p="${prefix}" -v detail="${LLAP_DETAIL:-1}" '
+      function flush(x) {
+         if (rep[x] > 0) body[x] = body[x] "    " lastts[x] "  ... " rep[x] " more line(s) like the one above\n"
+         rep[x] = 0; lastk[x] = ""
+      }
       {
          a = ""
          if (match($0, "[0-9]+_[0-9]+_[0-9]+_[0-9][0-9]_[0-9]+_[0-9]+")) a = substr($0, RSTART, RLENGTH)
@@ -4463,10 +4563,24 @@ grep -a -h -F -- "${prefix}" "${logs[@]}" 2>/dev/null | tr -d '\000' | grep -v '
             n_bad = split("NUM_FAILED_SHUFFLE_INPUTS ADDITIONAL_SPILL_COUNT SHUFFLE_BYTES_TO_DISK DESERIALIZE_ERRORS", bad, " ")
             for (b = 1; b <= n_bad; b++) if (match(line, bad[b] "=[1-9][0-9]*")) why = why (why == "" ? "" : ", ") substr(line, RSTART, RLENGTH)
          }
+         if (line ~ /Final Counters for/) {
+            o = line; ops[a] = ""
+            while (match(o, /RECORDS_OUT_OPERATOR_[A-Z]+_[0-9]+=/)) {
+               t = substr(o, RSTART + 21, RLENGTH - 21); sub(/_[0-9]+=$/, "", t)
+               ops[a] = ops[a] " " t; o = substr(o, RSTART + RLENGTH)
+            }
+         }
+         if (line ~ /Initialized MRInput: /) { t = line; sub(/.*Initialized MRInput: /, "", t); sub(/ ->.*/, "", t); tbl[a] = t }
+         txt = (line ~ /Final Counters for/) ? line : substr(line, 1, 260)
          if (why != "") {
             problems[a] = problems[a] "!! attempt_" a "  " ts "  " why "\n"
-            if (detail != "0") body[a] = body[a] "  !! " ts "  " tag (line ~ /Final Counters for/ ? line : substr(line, 1, 260)) "   <<< " why "\n"
-         } else if (detail != "0") body[a] = body[a] "    " ts "  " tag (line ~ /Final Counters for/ ? line : substr(line, 1, 260)) "\n"
+            if (detail != "0") { flush(a); body[a] = body[a] "  !! " ts "  " tag txt "   <<< " why "\n" }
+         } else if (detail != "0") {
+            # Lines that differ only in their numbers collapse into the first one plus a count.
+            k = tag line; gsub(/[0-9]+/, "#", k)
+            if (k == lastk[a]) { rep[a]++; lastts[a] = ts }
+            else { flush(a); lastk[a] = k; body[a] = body[a] "    " ts "  " tag txt "\n" }
+         }
          if (line ~ /ExecutionTime for Container:/) { c = line; sub(/.*Container: /, "", c); sub(/=.*/, "", c); cont[a] = c }
          if (line ~ /vertexName: /) { v = line; sub(/.*vertexName: /, "", v); vert[a] = v }
          if ($0 ~ /\[Task-Executor-[0-9]+ /) { e = $0; sub(/^[^[]*\[/, "", e); sub(/ .*/, "", e); exe[a] = e }
@@ -4474,6 +4588,8 @@ grep -a -h -F -- "${prefix}" "${logs[@]}" 2>/dev/null | tr -d '\000' | grep -v '
       END {
          for (i = 1; i <= n; i++) {
             a = order[i]
+            flush(a)
+            printf "@@OPS %s\t%s\t%s\n", vert[a], ops[a], tbl[a]
             retry = (a ~ /_[1-9][0-9]*$/) ? "   <<< retry attempt" : ""
             printf "%s attempt_%s  %s  %s  %s%s\n%s", (retry != "" ? "!!" : " "), a, (vert[a] != "" ? vert[a] : "?"), (cont[a] != "" ? cont[a] : "?"), exe[a], retry, body[a]
             if (detail == "0") printf "%s", problems[a]
@@ -4512,14 +4628,22 @@ EOS
             else { start[c] = f["StartTime"]; end[c] = f["EndTime"]; thread[c] = f["ThreadName"]
                    result[c] = (f["Succeeded"] == "true") ? "SUCCEEDED" : "FAILED" }
          }
+         function median(list,   k, x, y, t, cnt) {
+            cnt = split(list, x, " ")
+            for (k = 2; k <= cnt; k++) { t = x[k] + 0; for (y = k - 1; y > 0 && x[y] + 0 > t; y--) x[y + 1] = x[y]; x[y + 1] = t }
+            return (cnt > 0) ? x[int((cnt + 1) / 2)] + 0 : 0
+         }
          END {
             printf "   %-10s %-6s %-34s %-13s %-16s %8s %8s  %s\n", "VERTEX", "TASK", "CONTAINER", "LLAP", "EXECUTOR", "QUEUE_MS", "RUN_MS", "RESULT"
-            m = 0
+            all = ""
             for (i = 1; i <= n; i++) {
                c = order[i]
-               if (start[c] != "" && end[c] != "") { v = end[c] - start[c]; for (j = m; j > 0 && runs[j] > v; j--) runs[j + 1] = runs[j]; runs[j + 1] = v; m++ }
+               if (start[c] != "" && end[c] != "") {
+                  all = all " " (end[c] - start[c])
+                  vruns[vertex[c]] = vruns[vertex[c]] " " (end[c] - start[c]); vcount[vertex[c]]++
+               }
             }
-            median = (m > 0) ? runs[int((m + 1) / 2)] : 0
+            overall = median(all)
             for (i = 1; i <= n; i++) {
                c = order[i]
                q = (submit[c] != "" && start[c] != "") ? start[c] - submit[c] : "-"
@@ -4529,7 +4653,13 @@ EOS
                if (res != "SUCCEEDED") why = "not succeeded"
                if (q != "-" && q + 0 > 1000) why = why (why == "" ? "" : ", ") "queued " q " ms (executors busy)"
                if (task[c] !~ /\.0$/) why = why (why == "" ? "" : ", ") "retry attempt"
-               if (r != "-" && r + 0 > 1000 && median > 0 && r + 0 > 5 * median) why = why (why == "" ? "" : ", ") sprintf("long task: %.0fx the median %d ms (data skew or heavy stage)", r / median, median)
+               if (r != "-" && r + 0 > 1000) {
+                  vm = median(vruns[vertex[c]])
+                  if (vcount[vertex[c]] > 1 && vm > 0 && r + 0 > 5 * vm)
+                     why = why (why == "" ? "" : ", ") sprintf("long task: %.0fx the %s median %d ms (data skew)", r / vm, vertex[c], vm)
+                  else if (vcount[vertex[c]] == 1 && overall > 0 && r + 0 > 5 * overall)
+                     why = why (why == "" ? "" : ", ") sprintf("heavy stage: one task did all of %s (%.0fx the median task); no parallelism", vertex[c], r / overall)
+               }
                printf "%s\t%s %-10s %-6s %-34s %-13s %-16s %8s %8s  %s%s\n", vertex[c] "\t" (submit[c] != "" ? submit[c] : start[c]), (why != "" ? "!!" : "  "), vertex[c], task[c], c, host[c], (thread[c] != "" ? thread[c] : "-"), q, r, res, (why != "" ? "   <<< " why : "")
             }
          }' | { IFS= read -r header; printf '%s\n' "${header}"; sort -t $'\t' -k1,1 -k2,2n | cut -f3-; }
